@@ -2,9 +2,6 @@ name: Check tennis court availability
 
 on:
   workflow_dispatch:
-  schedule:
-    # JST 07:00〜23:30 を30分おき
-    - cron: "0,30 22,23,0-14 * * *"
 
 permissions:
   contents: read
@@ -35,6 +32,45 @@ jobs:
           pip install playwright
           python -m playwright install chromium
 
+      - name: Send LINE test message
+        run: |
+          python - <<'PY'
+          import os
+          import json
+          import urllib.request
+
+          token = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
+          to = os.getenv("LINE_USER_ID")
+
+          if not token:
+              raise RuntimeError("LINE_CHANNEL_ACCESS_TOKEN is missing")
+          if not to:
+              raise RuntimeError("LINE_USER_ID is missing")
+
+          payload = {
+              "to": to,
+              "messages": [
+                  {
+                      "type": "text",
+                      "text": "鹿児島テニス空きアラート：GitHub ActionsからのLINE通知テストです。"
+                  }
+              ]
+          }
+
+          req = urllib.request.Request(
+              "https://api.line.me/v2/bot/message/push",
+              data=json.dumps(payload).encode("utf-8"),
+              headers={
+                  "Authorization": f"Bearer {token}",
+                  "Content-Type": "application/json"
+              },
+              method="POST"
+          )
+
+          with urllib.request.urlopen(req, timeout=20) as res:
+              print("LINE status:", res.status)
+          PY
+
       - name: Create checker script
         run: |
           cat > run_check.py <<'PY'
@@ -43,7 +79,6 @@ jobs:
           import json
           import urllib.request
           from pathlib import Path
-          from datetime import datetime
           from playwright.sync_api import sync_playwright
 
           TARGET_NAME = "鴨池県営テニスコート"
@@ -65,15 +100,17 @@ jobs:
               return int(h) * 60 + int(m)
 
           def has_time_in_window(text: str) -> bool:
-              # 9:00〜10:00 / 09:00-10:00 のような表記
-              ranges = re.findall(r"(\d{1,2}[:：]\d{2})\s*[〜~\-－–—]\s*(\d{1,2}[:：]\d{2})", text)
+              ranges = re.findall(
+                  r"(\d{1,2}[:：]\d{2})\s*[〜~\-－–—]\s*(\d{1,2}[:：]\d{2})",
+                  text
+              )
+
               for s, e in ranges:
                   sm = minutes(s)
                   em = minutes(e)
                   if max(sm, DESIRED_START) < min(em, DESIRED_END):
                       return True
 
-              # 9:00 のような単独表記は1時間枠として扱う
               singles = re.findall(r"\d{1,2}[:：]\d{2}", text)
               for s in singles:
                   sm = minutes(s)
@@ -98,6 +135,7 @@ jobs:
                       }
                   ]
               }
+
               req = urllib.request.Request(
                   url,
                   data=json.dumps(payload).encode("utf-8"),
@@ -107,6 +145,7 @@ jobs:
                   },
                   method="POST"
               )
+
               with urllib.request.urlopen(req, timeout=20) as res:
                   print("LINE status:", res.status)
 
@@ -116,13 +155,16 @@ jobs:
           def looks_available(text: str) -> bool:
               if not any(k in text for k in AVAILABLE_KEYWORDS):
                   return False
+
               if any(k in text for k in UNAVAILABLE_KEYWORDS):
                   return False
-              # 凡例を除外
+
               if "予約可 要問合せ 予約済み 予約不可" in text:
                   return False
+
               if text.strip() in ["予約可", "○", "空", "空き"]:
                   return False
+
               return True
 
           def main():
@@ -139,6 +181,7 @@ jobs:
                           "Chrome/120.0 Safari/537.36"
                       )
                   )
+
                   page = context.new_page()
                   page.goto(TARGET_URL, wait_until="domcontentloaded", timeout=60000)
 
@@ -156,7 +199,9 @@ jobs:
                   candidates = page.evaluate("""
                   () => {
                     const out = [];
-                    const els = Array.from(document.querySelectorAll('a,button,td,th,li,div,span,[role="button"]'));
+                    const els = Array.from(
+                      document.querySelectorAll('a,button,td,th,li,div,span,[role="button"]')
+                    );
 
                     for (const el of els) {
                       const parts = [
@@ -185,19 +230,24 @@ jobs:
                   browser.close()
 
               hits = []
+
               for raw in candidates:
                   text = clean(raw)
+
                   if not text:
                       continue
+
                   if not looks_available(text):
                       continue
+
                   if not has_time_in_window(text):
                       continue
+
                   hits.append(text)
 
-              # 重複除去
               unique_hits = []
               seen = set()
+
               for h in hits:
                   if h not in seen:
                       seen.add(h)
@@ -206,17 +256,20 @@ jobs:
               print(f"candidates={len(unique_hits)}")
 
               if unique_hits:
-                  body = "\\n\\n".join([f"- {h[:300]}" for h in unique_hits[:10]])
+                  body = "\n\n".join([f"- {h[:300]}" for h in unique_hits[:10]])
+
                   msg = (
-                      "【テニスコート空き候補】\\n"
-                      f"施設：{TARGET_NAME}\\n"
-                      "対象：2026-05-03 8:00〜13:00\\n\\n"
-                      f"{body}\\n\\n"
-                      f"予約ページ：{TARGET_URL}\\n"
+                      "【テニスコート空き候補】\n"
+                      f"施設：{TARGET_NAME}\n"
+                      "対象：2026-05-03 8:00〜13:00\n\n"
+                      f"{body}\n\n"
+                      f"予約ページ：{TARGET_URL}\n"
                       "※予約は公式サイトからご本人で行ってください。"
                   )
+
                   print(msg)
                   line_push(msg)
+
               else:
                   print("No matching availability candidates.")
 
