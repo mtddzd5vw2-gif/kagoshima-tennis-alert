@@ -5,6 +5,7 @@ import json
 import os
 import re
 import unicodedata
+import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
@@ -21,7 +22,14 @@ MONITOR_START = time(8, 0)
 MONITOR_END = time(13, 0)
 MINIMUM_DURATION_MINUTES = 60
 DATA_PATH = Path("data/availability.json")
+NOTIFICATION_STATE_PATH = Path("data/notification-state.json")
+RUN_OUTPUT_DIRECTORY = Path("run-output")
 SNAPSHOT_ROOT = Path("snapshots")
+# LINE Messaging API: text max 5000 UTF-16 units, push max 5 messages/request.
+LINE_TEXT_MAX_UTF16_UNITS = 5000
+LINE_MESSAGES_PER_REQUEST = 5
+LINE_REQUEST_TIMEOUT_SECONDS = 20
+LINE_TEST_MESSAGE = "鹿児島テニス空き通知の接続テストです。"
 
 KAMOIKE_FACILITY_ID = "kamoike-prefectural"
 KAMOIKE_FACILITY_NAME = "鴨池県営テニスコート"
@@ -1208,17 +1216,200 @@ def detect_new_availability(
     return changes
 
 
-def build_line_message(changes: list[dict[str, Any]]) -> str:
-    lines = ["【テニスコート空き情報】", "新しい空き候補が見つかりました。"]
-    for change in changes[:10]:
-        lines.append(
-            f"・{change['facility_name']} {change['date']} "
-            f"{change['start_time']}〜{change['end_time']} "
-            f"{change['court_name']}"
+@dataclass(frozen=True)
+class LineSendResult:
+    attempted: bool
+    succeeded: bool
+    status: str
+    request_count: int = 0
+    error_message: str | None = None
+
+
+@dataclass(frozen=True)
+class RunOptions:
+    dry_run: bool = False
+    send_notification: bool = False
+    test_notification: bool = False
+    initialize_notification_baseline: bool = False
+
+
+@dataclass(frozen=True)
+class RunResult:
+    availability_written: bool
+    notification_state_written: bool
+    notification_status: str
+    notification_candidates: int
+    line_result: LineSendResult | None
+
+
+def utf16_units(value: str) -> int:
+    return len(value.encode("utf-16-le")) // 2
+
+
+def japanese_date_label(value: str) -> str:
+    parsed = date.fromisoformat(value)
+    weekdays = ("月", "火", "水", "木", "金", "土", "日")
+    return f"{parsed.month}月{parsed.day}日（{weekdays[parsed.weekday()]}）"
+
+
+def _line_group_sections(
+    changes: list[dict[str, Any]],
+    max_units: int,
+) -> list[str]:
+    grouped: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    for change in sorted(
+        changes,
+        key=lambda item: (
+            item["facility_name"],
+            item["date"],
+            natural_sort_key(item["court_name"]),
+            item["start_time"],
+            item["end_time"],
+        ),
+    ):
+        key = (
+            str(change["facility_name"]),
+            str(change["date"]),
+            str(change["reservation_url"]),
         )
-    if len(changes) > 10:
-        lines.append(f"ほか {len(changes) - 10} 件")
-    return "\n".join(lines)[:4900]
+        grouped.setdefault(key, []).append(change)
+
+    sections: list[str] = []
+    for (facility_name, target_date, reservation_url), slots in grouped.items():
+        prefix = f"{facility_name}\n{japanese_date_label(target_date)}"
+        suffix = f"予約ページ:\n{reservation_url}"
+        entries = [
+            f"{slot['court_name']}\n{slot['start_time']}〜{slot['end_time']}"
+            for slot in slots
+        ]
+        current_entries: list[str] = []
+        for entry in entries:
+            candidate_entries = [*current_entries, entry]
+            candidate = f"{prefix}\n\n" + "\n\n".join(candidate_entries)
+            candidate += f"\n\n{suffix}"
+            if utf16_units(candidate) <= max_units:
+                current_entries = candidate_entries
+                continue
+            if not current_entries:
+                raise ValueError("A single LINE availability entry exceeds the text limit")
+            sections.append(
+                f"{prefix}\n\n" + "\n\n".join(current_entries) + f"\n\n{suffix}"
+            )
+            current_entries = [entry]
+        if current_entries:
+            sections.append(
+                f"{prefix}\n\n" + "\n\n".join(current_entries) + f"\n\n{suffix}"
+            )
+    return sections
+
+
+def build_line_messages(
+    changes: list[dict[str, Any]],
+    max_units: int = LINE_TEXT_MAX_UTF16_UNITS,
+) -> list[str]:
+    if not changes:
+        return []
+    heading = "【鹿児島テニス空き情報】"
+    section_limit = max_units - utf16_units(heading) - 2
+    sections = _line_group_sections(changes, section_limit)
+    messages: list[str] = []
+    current = heading
+    for section in sections:
+        candidate = f"{current}\n\n{section}"
+        if utf16_units(candidate) <= max_units:
+            current = candidate
+            continue
+        messages.append(current)
+        current = f"{heading}\n\n{section}"
+        if utf16_units(current) > max_units:
+            raise ValueError("A LINE message exceeds the text limit")
+    if current != heading:
+        messages.append(current)
+    return messages
+
+
+def build_line_message(changes: list[dict[str, Any]]) -> str:
+    messages = build_line_messages(changes)
+    return messages[0] if messages else ""
+
+
+def _message_batches(messages: list[str]) -> Iterable[list[str]]:
+    for index in range(0, len(messages), LINE_MESSAGES_PER_REQUEST):
+        yield messages[index : index + LINE_MESSAGES_PER_REQUEST]
+
+
+def send_line_messages(
+    messages: list[str],
+    token: str | None = None,
+    user_id: str | None = None,
+    opener: Callable[..., Any] | None = None,
+) -> LineSendResult:
+    if not messages:
+        return LineSendResult(False, False, "no_messages")
+    line_token = token or os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
+    line_user_id = user_id or os.getenv("LINE_USER_ID")
+    if not line_token or not line_user_id:
+        print("LINE credentials are missing; notification skipped.")
+        return LineSendResult(False, False, "missing_credentials")
+
+    request_opener = opener or urllib.request.urlopen
+    request_count = 0
+    try:
+        for batch in _message_batches(messages):
+            payload = {
+                "to": line_user_id,
+                "messages": [{"type": "text", "text": message} for message in batch],
+            }
+            request = urllib.request.Request(
+                "https://api.line.me/v2/bot/message/push",
+                data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                headers={
+                    "Authorization": f"Bearer {line_token}",
+                    "Content-Type": "application/json",
+                },
+                method="POST",
+            )
+            request_count += 1
+            with request_opener(
+                request, timeout=LINE_REQUEST_TIMEOUT_SECONDS
+            ) as response:
+                status = int(response.status)
+                if not 200 <= status < 300:
+                    return LineSendResult(
+                        True,
+                        False,
+                        "http_error",
+                        request_count,
+                        f"HTTP {status}",
+                    )
+        print(f"LINE notification succeeded: requests={request_count}")
+        return LineSendResult(True, True, "success", request_count)
+    except urllib.error.HTTPError as exc:
+        return LineSendResult(
+            True, False, "http_error", request_count, f"HTTP {exc.code}"
+        )
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        status = "timeout" if isinstance(exc, TimeoutError) else "network_error"
+        return LineSendResult(
+            True,
+            False,
+            status,
+            request_count,
+            type(exc).__name__,
+        )
+
+
+def send_line_notification_result(
+    changes: list[dict[str, Any]],
+    token: str | None = None,
+    user_id: str | None = None,
+    opener: Callable[..., Any] | None = None,
+) -> LineSendResult:
+    try:
+        messages = build_line_messages(changes)
+    except (KeyError, TypeError, ValueError):
+        return LineSendResult(False, False, "message_format_error")
+    return send_line_messages(messages, token=token, user_id=user_id, opener=opener)
 
 
 def send_line_notification(
@@ -1226,31 +1417,17 @@ def send_line_notification(
     token: str | None = None,
     user_id: str | None = None,
 ) -> bool:
-    if not changes:
-        return False
+    return send_line_notification_result(changes, token, user_id).succeeded
 
-    line_token = token or os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
-    line_user_id = user_id or os.getenv("LINE_USER_ID")
-    if not line_token or not line_user_id:
-        print("LINE secrets are missing; notification skipped.")
-        return False
 
-    payload = {
-        "to": line_user_id,
-        "messages": [{"type": "text", "text": build_line_message(changes)}],
-    }
-    request = urllib.request.Request(
-        "https://api.line.me/v2/bot/message/push",
-        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {line_token}",
-            "Content-Type": "application/json",
-        },
-        method="POST",
+def send_line_test_notification(
+    token: str | None = None,
+    user_id: str | None = None,
+    opener: Callable[..., Any] | None = None,
+) -> LineSendResult:
+    return send_line_messages(
+        [LINE_TEST_MESSAGE], token=token, user_id=user_id, opener=opener
     )
-    with urllib.request.urlopen(request, timeout=20) as response:
-        print("LINE status:", response.status)
-    return True
 
 
 def load_document(path: Path = DATA_PATH) -> dict[str, Any]:
@@ -1278,18 +1455,321 @@ def comparable_document(document: dict[str, Any]) -> dict[str, Any]:
     return comparable
 
 
+def empty_notification_state() -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "initialized": False,
+        "updated_at": None,
+        "observed_slot_ids": [],
+        "observed_slot_scopes": {},
+        "last_notification_status": None,
+    }
+
+
+def load_notification_state(
+    path: Path = NOTIFICATION_STATE_PATH,
+) -> dict[str, Any]:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            raise ValueError("state is not an object")
+        initialized = raw.get("initialized")
+        slot_ids = raw.get("observed_slot_ids")
+        scopes = raw.get("observed_slot_scopes", {})
+        if not isinstance(initialized, bool):
+            raise ValueError("initialized is not boolean")
+        if not isinstance(slot_ids, list) or not all(
+            isinstance(slot_id, str) for slot_id in slot_ids
+        ):
+            raise ValueError("observed_slot_ids is invalid")
+        if not isinstance(scopes, dict) or not all(
+            isinstance(key, str) and isinstance(value, str)
+            for key, value in scopes.items()
+        ):
+            raise ValueError("observed_slot_scopes is invalid")
+        return {
+            "schema_version": 1,
+            "initialized": initialized,
+            "updated_at": raw.get("updated_at"),
+            "observed_slot_ids": sorted(set(slot_ids)),
+            "observed_slot_scopes": {
+                key: scopes[key] for key in sorted(scopes) if key in slot_ids
+            },
+            "last_notification_status": raw.get("last_notification_status"),
+        }
+    except FileNotFoundError:
+        return empty_notification_state()
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
+        print("Notification state is missing or invalid; baseline initialization required.")
+        return empty_notification_state()
+
+
+def write_notification_state(
+    state: dict[str, Any],
+    path: Path = NOTIFICATION_STATE_PATH,
+) -> None:
+    write_document(state, path)
+
+
+def slot_scope(slot: dict[str, Any]) -> str:
+    return f"{slot.get('facility_id', '')}|{slot.get('date', '')}"
+
+
+def document_date_statuses(document: dict[str, Any]) -> dict[str, str]:
+    statuses: dict[str, str] = {}
+    for facility in document.get("facilities", []):
+        facility_id = str(facility.get("id", ""))
+        for date_entry in facility.get("dates", []):
+            scope = f"{facility_id}|{date_entry.get('date', '')}"
+            statuses[scope] = str(date_entry.get("status", ""))
+    return statuses
+
+
+@dataclass(frozen=True)
+class NotificationObservation:
+    candidates: list[dict[str, Any]]
+    suppressed_recovery_ids: set[str]
+    target_ids: set[str]
+    target_scopes: dict[str, str]
+    failure_ids: set[str]
+    failure_scopes: dict[str, str]
+
+
+def observe_notification_changes(
+    state: dict[str, Any],
+    previous_availability: dict[str, Any],
+    current_availability: dict[str, Any],
+) -> NotificationObservation:
+    previous_ids = set(state.get("observed_slot_ids", []))
+    previous_scopes = dict(state.get("observed_slot_scopes", {}))
+    current_slots = available_slot_keys(current_availability)
+    current_statuses = document_date_statuses(current_availability)
+    previous_statuses = document_date_statuses(previous_availability)
+
+    target_ids = set(current_slots)
+    target_scopes = {
+        slot_id: slot_scope(slot) for slot_id, slot in current_slots.items()
+    }
+    failed_scopes = {
+        scope for scope, status in current_statuses.items() if status != "success"
+    }
+    for slot_id in previous_ids:
+        scope = previous_scopes.get(slot_id)
+        if scope in failed_scopes:
+            target_ids.add(slot_id)
+            if scope:
+                target_scopes[slot_id] = scope
+
+    candidates: list[dict[str, Any]] = []
+    suppressed_recovery_ids: set[str] = set()
+    for slot_id in sorted(set(current_slots) - previous_ids):
+        slot = current_slots[slot_id]
+        scope = slot_scope(slot)
+        previous_status = previous_statuses.get(scope)
+        if previous_status and previous_status != "success":
+            suppressed_recovery_ids.add(slot_id)
+            continue
+        candidates.append(slot)
+
+    failure_ids = previous_ids | suppressed_recovery_ids
+    failure_scopes = dict(previous_scopes)
+    for slot_id in suppressed_recovery_ids:
+        failure_scopes[slot_id] = target_scopes[slot_id]
+    return NotificationObservation(
+        candidates=candidates,
+        suppressed_recovery_ids=suppressed_recovery_ids,
+        target_ids=target_ids,
+        target_scopes=target_scopes,
+        failure_ids=failure_ids,
+        failure_scopes=failure_scopes,
+    )
+
+
+def updated_notification_state(
+    previous: dict[str, Any],
+    observed_ids: set[str],
+    observed_scopes: dict[str, str],
+    status: str,
+    checked_at: str,
+    initialized: bool = True,
+) -> dict[str, Any]:
+    normalized_scopes = {
+        slot_id: observed_scopes[slot_id]
+        for slot_id in sorted(observed_ids)
+        if slot_id in observed_scopes
+    }
+    candidate = {
+        "schema_version": 1,
+        "initialized": initialized,
+        "updated_at": checked_at,
+        "observed_slot_ids": sorted(observed_ids),
+        "observed_slot_scopes": normalized_scopes,
+        "last_notification_status": status,
+    }
+    comparable_previous = dict(previous)
+    comparable_candidate = dict(candidate)
+    comparable_previous.pop("updated_at", None)
+    comparable_candidate.pop("updated_at", None)
+    if comparable_previous == comparable_candidate:
+        candidate["updated_at"] = previous.get("updated_at")
+    return candidate
+
+
+def process_scrape_result(
+    previous: dict[str, Any],
+    current: dict[str, Any],
+    state: dict[str, Any],
+    options: RunOptions,
+    data_path: Path = DATA_PATH,
+    state_path: Path = NOTIFICATION_STATE_PATH,
+    output_directory: Path = RUN_OUTPUT_DIRECTORY,
+    token: str | None = None,
+    user_id: str | None = None,
+    opener: Callable[..., Any] | None = None,
+) -> RunResult:
+    checked_at = datetime.now(JST).isoformat(timespec="seconds")
+    observation = observe_notification_changes(state, previous, current)
+    availability_changed = comparable_document(previous) != comparable_document(current)
+    availability_written = False
+    state_written = False
+    line_result: LineSendResult | None = None
+
+    output_directory.mkdir(parents=True, exist_ok=True)
+    write_document(current, output_directory / "availability.json")
+    if not options.dry_run and availability_changed:
+        # Persist fresh scrape results before any notification attempt.
+        write_document(current, data_path)
+        availability_written = True
+
+    if options.dry_run:
+        next_state = updated_notification_state(
+            state,
+            observation.target_ids,
+            observation.target_scopes,
+            "dry_run_preview",
+            checked_at,
+        )
+        notification_status = "dry_run"
+    elif options.test_notification:
+        line_result = send_line_test_notification(token, user_id, opener)
+        notification_status = (
+            "test_notification_succeeded"
+            if line_result.succeeded
+            else f"test_notification_{line_result.status}"
+        )
+        next_state = updated_notification_state(
+            state,
+            set(state.get("observed_slot_ids", [])),
+            dict(state.get("observed_slot_scopes", {})),
+            notification_status,
+            checked_at,
+            initialized=bool(state.get("initialized", False)),
+        )
+    elif options.initialize_notification_baseline or not state.get("initialized", False):
+        notification_status = "baseline_initialized"
+        next_state = updated_notification_state(
+            state,
+            observation.target_ids,
+            observation.target_scopes,
+            notification_status,
+            checked_at,
+        )
+    elif not options.send_notification:
+        notification_status = "notification_suppressed_baseline_advanced"
+        next_state = updated_notification_state(
+            state,
+            observation.target_ids,
+            observation.target_scopes,
+            notification_status,
+            checked_at,
+        )
+    elif not observation.candidates:
+        notification_status = "no_new_slots"
+        next_state = updated_notification_state(
+            state,
+            observation.target_ids,
+            observation.target_scopes,
+            notification_status,
+            checked_at,
+        )
+    else:
+        line_result = send_line_notification_result(
+            observation.candidates,
+            token=token,
+            user_id=user_id,
+            opener=opener,
+        )
+        if line_result.succeeded:
+            notification_status = "notification_succeeded"
+            next_state = updated_notification_state(
+                state,
+                observation.target_ids,
+                observation.target_scopes,
+                notification_status,
+                checked_at,
+            )
+        else:
+            notification_status = f"notification_{line_result.status}"
+            next_state = updated_notification_state(
+                state,
+                observation.failure_ids,
+                observation.failure_scopes,
+                notification_status,
+                checked_at,
+            )
+            print(
+                f"::warning::LINE notification failed ({line_result.status}); "
+                "notification baseline was not advanced."
+            )
+
+    if not options.dry_run:
+        if next_state != state:
+            write_notification_state(next_state, state_path)
+            state_written = True
+
+    write_notification_state(next_state, output_directory / "notification-state.json")
+    print(
+        f"new_slots={len(observation.candidates)} "
+        f"notification={notification_status} dry_run={options.dry_run}"
+    )
+    return RunResult(
+        availability_written=availability_written,
+        notification_state_written=state_written,
+        notification_status=notification_status,
+        notification_candidates=len(observation.candidates),
+        line_result=line_result,
+    )
+
+
+def environment_boolean(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def run_options_from_environment() -> RunOptions:
+    return RunOptions(
+        dry_run=environment_boolean("DRY_RUN"),
+        send_notification=environment_boolean("SEND_NOTIFICATION"),
+        test_notification=environment_boolean("TEST_NOTIFICATION"),
+        initialize_notification_baseline=environment_boolean(
+            "INITIALIZE_NOTIFICATION_BASELINE"
+        ),
+    )
+
+
 def main() -> int:
     previous = load_document()
+    state = load_notification_state()
     targets = generate_target_days()
     current = build_document(targets)
-    changes = detect_new_availability(previous, current)
-    if comparable_document(previous) != comparable_document(current):
-        write_document(current)
-        result = "updated"
-    else:
-        result = "unchanged"
-    print(f"target_days={len(targets)} new_slots={len(changes)} data={result}")
-    send_line_notification(changes)
+    process_scrape_result(
+        previous,
+        current,
+        state,
+        run_options_from_environment(),
+    )
     return 0
 
 

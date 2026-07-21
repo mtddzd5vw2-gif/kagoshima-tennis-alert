@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "initialized": true,
+  "updated_at": "2026-07-21T15:33:07+09:00",
+  "observed_slot_ids": [
+    "15b45d4e78760311645c96b9",
+    "203ca5db7a17b3b57cb1dfe0",
+    "2eedbf4500b98b2fbc40bc12",
+    "56fce5d872e1b0c44b493d89",
+    "605b4624da85d943d31bacda",
+    "7030245ec8d6243079017252",
+    "7ebc5bc81f8a1905a444c536",
+    "9b025e41172ff82c25c291d4",
+    "b103f6248a73b21ceb9dbfaa",
+    "b1fde79a1868918c1621ad01",
+    "b88159f6ce867a4a3ffc2642",
+    "e8ef4e0f90807b57938ff3a9"
+  ],
+  "observed_slot_scopes": {
+    "15b45d4e78760311645c96b9": "kamoike-prefectural|2026-08-01",
+    "203ca5db7a17b3b57cb1dfe0": "kamoike-prefectural|2026-08-01",
+    "2eedbf4500b98b2fbc40bc12": "kamoike-prefectural|2026-08-01",
+    "56fce5d872e1b0c44b493d89": "kamoike-prefectural|2026-08-01",
+    "605b4624da85d943d31bacda": "kamoike-prefectural|2026-08-01",
+    "7030245ec8d6243079017252": "kamoike-prefectural|2026-08-02",
+    "7ebc5bc81f8a1905a444c536": "kamoike-prefectural|2026-08-01",
+    "9b025e41172ff82c25c291d4": "kamoike-prefectural|2026-08-01",
+    "b103f6248a73b21ceb9dbfaa": "kamoike-prefectural|2026-08-01",
+    "b1fde79a1868918c1621ad01": "kamoike-prefectural|2026-08-02",
+    "b88159f6ce867a4a3ffc2642": "kamoike-prefectural|2026-08-01",
+    "e8ef4e0f90807b57938ff3a9": "kamoike-prefectural|2026-08-01"
+  },
+  "last_notification_status": "baseline_initialized"
+}
