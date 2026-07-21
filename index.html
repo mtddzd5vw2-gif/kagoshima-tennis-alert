@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#12372a">
+    <title>鹿児島テニス空き情報</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: #f3f6f2;
+        color: #17231d;
+      }
+
+      * { box-sizing: border-box; }
+      body { margin: 0; }
+      header {
+        padding: 28px 20px 22px;
+        color: white;
+        background: linear-gradient(135deg, #12372a, #2e6a48);
+      }
+      h1 { margin: 0 0 8px; font-size: clamp(1.45rem, 6vw, 2rem); }
+      header p { margin: 0; color: #dcebe1; line-height: 1.6; }
+      main { width: min(100% - 28px, 720px); margin: 20px auto 44px; }
+      .summary, .facility, .notice {
+        margin-bottom: 16px;
+        padding: 18px;
+        border: 1px solid #dce4dc;
+        border-radius: 16px;
+        background: white;
+        box-shadow: 0 8px 24px rgb(18 55 42 / 7%);
+      }
+      .summary { display: grid; gap: 6px; }
+      .label { color: #637168; font-size: .82rem; }
+      .facility h2 { margin: 0 0 14px; font-size: 1.15rem; }
+      .date-block { padding: 14px 0; border-top: 1px solid #edf0ed; }
+      .date-block:first-of-type { padding-top: 0; border-top: 0; }
+      .date-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+      .date-title h3 { margin: 0; font-size: 1rem; }
+      .badge {
+        flex: none;
+        padding: 4px 9px;
+        border-radius: 999px;
+        color: #7a3b00;
+        background: #fff0d8;
+        font-size: .75rem;
+      }
+      .slots { display: grid; gap: 8px; margin-top: 10px; }
+      .slot {
+        display: block;
+        padding: 12px;
+        border-radius: 12px;
+        color: #12372a;
+        background: #eaf6ed;
+        text-decoration: none;
+      }
+      .slot strong { display: block; margin-bottom: 4px; }
+      .empty, .status { margin: 10px 0 0; color: #6c756f; font-size: .9rem; }
+      .error { color: #a52828; }
+      button {
+        width: 100%;
+        min-height: 48px;
+        border: 0;
+        border-radius: 12px;
+        color: white;
+        background: #1f6845;
+        font: inherit;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      footer { padding: 0 20px 28px; color: #69746d; text-align: center; font-size: .8rem; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>鹿児島テニス空き情報</h1>
+      <p>直近15日間の土日祝、8:00〜13:00の空き候補を表示します。</p>
+    </header>
+    <main>
+      <section class="summary" aria-live="polite">
+        <span class="label">最終更新</span>
+        <strong id="updated">読み込み中…</strong>
+        <span id="window" class="label"></span>
+      </section>
+      <div id="content"></div>
+      <button id="reload" type="button">最新情報を再読み込み</button>
+    </main>
+    <footer>空き状況は候補です。予約前に必ず公式サイトで確認してください。</footer>
+
+    <script>
+      const content = document.querySelector("#content");
+      const updated = document.querySelector("#updated");
+      const windowLabel = document.querySelector("#window");
+
+      function element(tag, className, text) {
+        const node = document.createElement(tag);
+        if (className) node.className = className;
+        if (text !== undefined) node.textContent = text;
+        return node;
+      }
+
+      function renderDate(dateEntry) {
+        const block = element("section", "date-block");
+        const heading = element("div", "date-title");
+        heading.append(element("h3", "", dateEntry.date));
+        heading.append(element(
+          "span",
+          "badge",
+          dateEntry.holiday_name || (dateEntry.day_type === "weekend" ? "土日" : "対象日")
+        ));
+        block.append(heading);
+
+        if (dateEntry.status === "error") {
+          block.append(element("p", "status error", `取得エラー: ${dateEntry.message || "詳細不明"}`));
+          return block;
+        }
+        if (dateEntry.status === "selector_pending") {
+          block.append(element("p", "status", "施設の取得設定を調整中です。"));
+          return block;
+        }
+        if (!dateEntry.slots?.length) {
+          block.append(element("p", "empty", "対象時間帯の空き候補はありません。"));
+          return block;
+        }
+
+        const slots = element("div", "slots");
+        dateEntry.slots.forEach((slot) => {
+          const link = element("a", "slot");
+          link.href = slot.booking_url;
+          link.target = "_blank";
+          link.rel = "noopener noreferrer";
+          link.append(element("strong", "", `${slot.start}〜${slot.end}`));
+          link.append(document.createTextNode(slot.court || "コート情報を見る"));
+          slots.append(link);
+        });
+        block.append(slots);
+        return block;
+      }
+
+      function render(data) {
+        content.replaceChildren();
+        updated.textContent = data.generated_at
+          ? new Intl.DateTimeFormat("ja-JP", { dateStyle: "medium", timeStyle: "short" })
+              .format(new Date(data.generated_at))
+          : "まだ更新されていません";
+        windowLabel.textContent = `${data.window.start}〜${data.window.end}（${data.window.timezone}）`;
+
+        data.facilities.forEach((facility) => {
+          const card = element("article", "facility");
+          card.append(element("h2", "", facility.name));
+          if (!facility.dates?.length) {
+            card.append(element("p", "empty", "対象日のデータはまだありません。"));
+          } else {
+            facility.dates.forEach((entry) => card.append(renderDate(entry)));
+          }
+          content.append(card);
+        });
+      }
+
+      async function loadAvailability() {
+        updated.textContent = "読み込み中…";
+        try {
+          const response = await fetch(`data/availability.json?t=${Date.now()}`, { cache: "no-store" });
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          render(await response.json());
+        } catch (error) {
+          content.replaceChildren(element("p", "notice error", `データを読み込めませんでした: ${error.message}`));
+          updated.textContent = "取得失敗";
+        }
+      }
+
+      document.querySelector("#reload").addEventListener("click", loadAvailability);
+      loadAvailability();
+    </script>
+  </body>
+</html>

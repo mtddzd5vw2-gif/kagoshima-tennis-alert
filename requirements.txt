@@ -1,0 +1,4 @@
+jpholiday==1.0.3
+playwright==1.61.0
+pytest==9.1.1
+PyYAML==6.0.3
