@@ -2,31 +2,68 @@ name: Update tennis availability
 
 on:
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Acquire data and artifacts without LINE, commit, push, or Pages deployment
+        type: boolean
+        default: true
+      send_notification:
+        description: Send notifications for newly observed slots
+        type: boolean
+        default: false
+      test_notification:
+        description: Send exactly one fixed LINE connection-test message
+        type: boolean
+        default: false
+      initialize_notification_baseline:
+        description: Save current slots as the notification baseline without notifying
+        type: boolean
+        default: false
   schedule:
     # JST 07:00〜23:30 の30分おき（GitHub ActionsのcronはUTC）
     - cron: "0,30 0-14,22-23 * * *"
 
 permissions:
-  contents: write
-  pages: write
-  id-token: write
+  contents: read
 
 concurrency:
-  group: tennis-availability
+  group: tennis-availability-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   update:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      vars.ENABLE_SCHEDULED_RUNS == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+    permissions:
+      contents: write
+    outputs:
+      deploy_pages: ${{ steps.execution-mode.outputs.deploy_pages }}
     env:
       LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
       LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
+      SEND_NOTIFICATION: >-
+        ${{ (github.event_name == 'schedule' && vars.ENABLE_LINE_NOTIFICATIONS == 'true') ||
+            (github.event_name == 'workflow_dispatch' && inputs.send_notification) }}
+      TEST_NOTIFICATION: >-
+        ${{ github.event_name == 'workflow_dispatch' && inputs.test_notification || false }}
+      INITIALIZE_NOTIFICATION_BASELINE: >-
+        ${{ github.event_name == 'workflow_dispatch' && inputs.initialize_notification_baseline || false }}
 
     steps:
+      - name: Determine execution mode
+        id: execution-mode
+        shell: bash
+        run: |
+          if [[ "${DRY_RUN}" == "true" ]]; then
+            echo "deploy_pages=false" >> "${GITHUB_OUTPUT}"
+          else
+            echo "deploy_pages=true" >> "${GITHUB_OUTPUT}"
+          fi
+
       - name: Check out repository
         uses: actions/checkout@v4
 
@@ -44,39 +81,65 @@ jobs:
       - name: Run tests
         run: python -m pytest
 
-      - name: Update availability data
+      - name: Update availability and notification state
         run: python scripts/scrape.py
 
-      - name: Upload reservation page snapshots
+      - name: Upload run data and reservation page snapshots
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: reservation-page-snapshots
-          path: snapshots
+          path: |
+            snapshots
+            run-output/availability.json
+            run-output/notification-state.json
+            index.html
           if-no-files-found: warn
           retention-days: 7
 
-      - name: Commit changed availability data
+      - name: Commit changed availability and notification state
+        if: env.DRY_RUN != 'true'
+        shell: bash
         run: |
-          if git diff --quiet -- data/availability.json; then
-            echo "Availability data is unchanged."
+          if git diff --quiet -- data/availability.json data/notification-state.json; then
+            echo "Availability and notification state are unchanged."
           else
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add data/availability.json
+            git add data/availability.json data/notification-state.json
             git commit -m "data: update tennis availability"
-            git push
+            if ! git push; then
+              echo "::warning::Push was rejected, likely due to a concurrent external update. Run the workflow again."
+              exit 1
+            fi
           fi
+
+  deploy-pages:
+    needs: update
+    if: needs.update.result == 'success' && needs.update.outputs.deploy_pages == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Download run artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: reservation-page-snapshots
+          path: run-artifact
 
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
 
       - name: Prepare GitHub Pages files
+        shell: bash
         run: |
-          mkdir _site
-          cp index.html _site/index.html
-          mkdir _site/data
-          cp data/availability.json _site/data/availability.json
+          mkdir -p _site/data
+          cp run-artifact/index.html _site/index.html
+          cp run-artifact/run-output/availability.json _site/data/availability.json
 
       - name: Upload GitHub Pages artifact
         uses: actions/upload-pages-artifact@v3
