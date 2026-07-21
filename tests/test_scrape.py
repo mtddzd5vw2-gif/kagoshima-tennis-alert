@@ -9,8 +9,10 @@ from scripts import scrape
 
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "kamoike_schedule.html"
+SUMIZEI_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "sumizei_schedule.html"
 TARGET = scrape.TargetDay(date(2026, 8, 1), "weekend", None)
 RESERVATION_URL = scrape.KAMOIKE_URL_TEMPLATE.format(date="2026-08-01")
+SUMIZEI_RESERVATION_URL = scrape.SUMIZEI_BASE_URL
 CHECKED_AT = "2026-07-21T12:00:00+09:00"
 
 
@@ -23,6 +25,19 @@ def parsed_result(html: str | None = None) -> dict:
         html or fixture_html(),
         TARGET,
         RESERVATION_URL,
+        CHECKED_AT,
+    )
+
+
+def sumizei_fixture_html() -> str:
+    return SUMIZEI_FIXTURE_PATH.read_text(encoding="utf-8")
+
+
+def parsed_sumizei_result(html: str | None = None) -> dict:
+    return scrape.parse_sumizei_html(
+        html or sumizei_fixture_html(),
+        TARGET,
+        SUMIZEI_RESERVATION_URL,
         CHECKED_AT,
     )
 
@@ -251,6 +266,193 @@ def test_comparable_document_ignores_check_timestamps() -> None:
     assert scrape.comparable_document(previous) == scrape.comparable_document(current)
 
 
+def test_sumizei_extracts_one_hour_available_slot() -> None:
+    availability = parsed_sumizei_result()["availability"]
+
+    assert any(
+        slot["court_name"] == "テニスコート1"
+        and slot["start_time"] == "12:00"
+        and slot["end_time"] == "13:00"
+        and slot["duration_minutes"] == 60
+        for slot in availability
+    )
+
+
+def test_sumizei_merges_consecutive_slots() -> None:
+    slot = next(
+        slot
+        for slot in parsed_sumizei_result()["availability"]
+        if slot["court_name"] == "テニスコート1" and slot["start_time"] == "08:00"
+    )
+
+    assert slot["end_time"] == "10:00"
+    assert slot["duration_minutes"] == 120
+
+
+def test_sumizei_keeps_multiple_courts_separate() -> None:
+    courts = {slot["court_name"] for slot in parsed_sumizei_result()["availability"]}
+
+    assert courts == {"テニスコート1", "テニスコート2"}
+
+
+def test_sumizei_excludes_slots_outside_monitor_window() -> None:
+    availability = parsed_sumizei_result()["availability"]
+
+    assert all(slot["start_time"] >= "08:00" for slot in availability)
+    assert all(slot["end_time"] <= "13:00" for slot in availability)
+    assert not any(slot["start_time"] == "12:30" for slot in availability)
+
+
+def test_sumizei_excludes_unavailable_cells_and_legend() -> None:
+    availability = parsed_sumizei_result()["availability"]
+
+    assert len(availability) == 3
+    assert all(slot["court_name"].startswith("テニスコート") for slot in availability)
+    assert all(slot["status"] == "available" for slot in availability)
+
+
+def test_sumizei_zero_availability_is_success() -> None:
+    html = sumizei_fixture_html().replace(">○<", ">×<")
+
+    result = parsed_sumizei_result(html)
+
+    assert result["status"] == "success"
+    assert result["availability"] == []
+
+
+def test_sumizei_facility_not_found_is_recorded() -> None:
+    capture = scrape.PageCapture(
+        html="<html></html>",
+        checked_at=CHECKED_AT,
+        response_status=200,
+        error_type="facility_not_found",
+        error_message="facility code 029 was not found",
+    )
+    client = FakePageClient(PageCaptureFactory.success(fixture_html()), capture)
+    facility = scrape.configured_facilities()[1]
+
+    result = scrape.scrape_sumizei(client, facility, TARGET)
+
+    assert result["status"] == "error"
+    assert result["error_type"] == "facility_not_found"
+    assert result["availability"] == []
+
+
+def test_sumizei_dom_change_raises_unexpected_dom() -> None:
+    html = sumizei_fixture_html().replace(' class="header"', "")
+
+    with pytest.raises(scrape.ScrapeStructureError) as error:
+        parsed_sumizei_result(html)
+
+    assert error.value.error_type == "unexpected_dom"
+
+
+def test_sumizei_duplicate_slots_are_removed() -> None:
+    court_two = [
+        slot
+        for slot in parsed_sumizei_result()["availability"]
+        if slot["court_name"] == "テニスコート2"
+    ]
+
+    assert len(court_two) == 1
+    assert court_two[0]["start_time"] == "09:00"
+    assert court_two[0]["end_time"] == "10:00"
+
+
+def test_sumizei_slot_id_is_stable() -> None:
+    first = parsed_sumizei_result()["availability"][0]
+    second = parsed_sumizei_result()["availability"][0]
+
+    assert first["slot_id"] == second["slot_id"] == scrape.make_slot_id(
+        first["facility_id"],
+        first["date"],
+        first["court_name"],
+        first["start_time"],
+        first["end_time"],
+    )
+
+
+def test_build_document_integrates_kamoike_and_sumizei() -> None:
+    client = FakePageClient(
+        PageCaptureFactory.success(fixture_html()),
+        PageCaptureFactory.success(sumizei_fixture_html()),
+    )
+
+    document = scrape.build_document(
+        [TARGET],
+        facilities=scrape.configured_facilities(),
+        client_factory=lambda: client,
+    )
+
+    facilities = {facility["id"]: facility for facility in document["facilities"]}
+    assert set(facilities) == {"kamoike-prefectural", "sumizei"}
+    assert facilities["kamoike-prefectural"]["dates"][0]["status"] == "success"
+    assert facilities["sumizei"]["dates"][0]["status"] == "success"
+    assert len(facilities["sumizei"]["dates"][0]["availability"]) == 3
+
+
+def test_one_facility_failure_preserves_other_facility_result() -> None:
+    sumizei_error = scrape.PageCapture(
+        html="<html></html>",
+        checked_at=CHECKED_AT,
+        response_status=None,
+        error_type="navigation_timeout",
+        error_message="timed out",
+    )
+    client = FakePageClient(
+        PageCaptureFactory.success(fixture_html()),
+        sumizei_error,
+    )
+
+    document = scrape.build_document(
+        [TARGET],
+        facilities=scrape.configured_facilities(),
+        client_factory=lambda: client,
+    )
+
+    facilities = {facility["id"]: facility for facility in document["facilities"]}
+    assert facilities["kamoike-prefectural"]["dates"][0]["status"] == "success"
+    assert len(facilities["kamoike-prefectural"]["dates"][0]["availability"]) == 3
+    assert facilities["sumizei"]["dates"][0]["status"] == "error"
+
+
+def test_diff_notifies_new_slots_but_not_error_recovery() -> None:
+    slot = parsed_sumizei_result()["availability"][0]
+    current = {
+        "facilities": [
+            {
+                "id": "sumizei",
+                "dates": [
+                    {"date": TARGET.date.isoformat(), "status": "success", "availability": [slot]}
+                ],
+            }
+        ]
+    }
+    previous_success = {
+        "facilities": [
+            {
+                "id": "sumizei",
+                "dates": [
+                    {"date": TARGET.date.isoformat(), "status": "success", "availability": []}
+                ],
+            }
+        ]
+    }
+    previous_error = {
+        "facilities": [
+            {
+                "id": "sumizei",
+                "dates": [
+                    {"date": TARGET.date.isoformat(), "status": "error", "availability": []}
+                ],
+            }
+        ]
+    }
+
+    assert scrape.detect_new_availability(previous_success, current) == [slot]
+    assert scrape.detect_new_availability(previous_error, current) == []
+
+
 class PageCaptureFactory:
     @staticmethod
     def success(html: str) -> scrape.PageCapture:
@@ -262,8 +464,13 @@ class PageCaptureFactory:
 
 
 class FakePageClient:
-    def __init__(self, capture: scrape.PageCapture) -> None:
+    def __init__(
+        self,
+        capture: scrape.PageCapture,
+        sumizei_capture: scrape.PageCapture | None = None,
+    ) -> None:
         self.capture = capture
+        self.sumizei_capture = sumizei_capture or capture
         self.snapshot_directory: Path | None = None
         self.snapshot_name = ""
 
@@ -285,3 +492,13 @@ class FakePageClient:
 
     def extract_texts(self, url: str, selector: str) -> list[str]:
         return []
+
+    def capture_sumizei_schedule(
+        self,
+        reservation_url: str,
+        target_date: date,
+        snapshot_directory: Path,
+    ) -> scrape.PageCapture:
+        self.snapshot_directory = snapshot_directory
+        self.snapshot_name = target_date.isoformat()
+        return self.sumizei_capture

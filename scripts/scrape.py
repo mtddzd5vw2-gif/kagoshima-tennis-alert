@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import unicodedata
 import urllib.request
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
@@ -29,8 +30,19 @@ KAMOIKE_URL_TEMPLATE = (
     "?date={date}&category_id=483&area_id=289"
 )
 
+SUMIZEI_FACILITY_ID = "sumizei"
+SUMIZEI_FACILITY_NAME = "SuMIzeiテニスコート"
+SUMIZEI_BASE_URL = "https://k2.p-kashikan.jp/kagoshima-city/"
+SUMIZEI_FACILITY_CODE = "029"
+
 WIDTH_PATTERN = re.compile(r"width\s*:\s*([\d.]+)%", re.IGNORECASE)
 STATE_CLASS_PATTERN = re.compile(r"rsv--result--(yes|no|out)")
+PIXEL_WIDTH_PATTERN = re.compile(r"width\s*:\s*([\d.]+)px", re.IGNORECASE)
+SUMIZEI_SLOT_PATTERN = re.compile(
+    r"setAppStatus\(\s*'(?P<resource>[^']+)'\s*,\s*"
+    r"'(?P<date>\d{4}/\d{2}/\d{2})'\s*,\s*\d+\s*,\s*"
+    r"'(?P<times>\d{8})'"
+)
 ACCESS_DENIED_MARKERS = (
     "access denied",
     "forbidden",
@@ -80,6 +92,13 @@ class PageClient(Protocol):
     ) -> PageCapture: ...
 
     def extract_texts(self, url: str, selector: str) -> list[str]: ...
+
+    def capture_sumizei_schedule(
+        self,
+        reservation_url: str,
+        target_date: date,
+        snapshot_directory: Path,
+    ) -> PageCapture: ...
 
 
 class PlaywrightClient:
@@ -222,6 +241,204 @@ class PlaywrightClient:
         try:
             page.goto(url, wait_until="domcontentloaded", timeout=60_000)
             return page.locator(selector).all_inner_texts()
+        finally:
+            context.close()
+
+    @staticmethod
+    def _save_page_snapshot(
+        page: Any,
+        snapshot_directory: Path,
+        snapshot_name: str,
+    ) -> tuple[str, str | None]:
+        snapshot_directory.mkdir(parents=True, exist_ok=True)
+        html_path = snapshot_directory / f"{snapshot_name}.html"
+        image_path = snapshot_directory / f"{snapshot_name}.png"
+        errors: list[str] = []
+        try:
+            html = page.content()
+        except Exception as exc:
+            html = (
+                "<!doctype html><html><body><h1>Capture failed</h1>"
+                f"<pre>{exc}</pre></body></html>"
+            )
+            errors.append(f"content capture failed: {exc}")
+        html_path.write_text(html, encoding="utf-8")
+        try:
+            page.screenshot(path=str(image_path), full_page=True)
+        except Exception as exc:
+            errors.append(f"screenshot failed: {exc}")
+        return html, "; ".join(errors) or None
+
+    def capture_sumizei_schedule(
+        self,
+        reservation_url: str,
+        target_date: date,
+        snapshot_directory: Path,
+    ) -> PageCapture:
+        """Follow the anonymous public form flow observed on the live site."""
+        from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
+        if self._browser is None:
+            raise RuntimeError("PlaywrightClient must be used as a context manager")
+
+        checked_at = datetime.now(JST).isoformat(timespec="seconds")
+        date_label = target_date.isoformat()
+        ymd = target_date.strftime("%Y%m%d")
+        response_status: int | None = None
+        html = ""
+        step = "top"
+        context = self._browser.new_context(
+            locale="ja-JP",
+            timezone_id="Asia/Tokyo",
+            viewport={"width": 1440, "height": 1000},
+        )
+        page = context.new_page()
+        try:
+            response = page.goto(
+                reservation_url,
+                wait_until="domcontentloaded",
+                timeout=60_000,
+            )
+            response_status = response.status if response else None
+            html, snapshot_error = self._save_page_snapshot(
+                page, snapshot_directory, f"{date_label}-top"
+            )
+            if snapshot_error:
+                raise ScrapeStructureError("snapshot_error", snapshot_error)
+            if response_status in {401, 403, 429} or any(
+                marker in BeautifulSoup(html, "html.parser").get_text(" ", strip=True).lower()
+                for marker in ACCESS_DENIED_MARKERS
+            ):
+                raise ScrapeStructureError(
+                    "access_denied", f"Access denied (HTTP {response_status})"
+                )
+
+            step = "facility-search"
+            with page.expect_navigation(wait_until="domcontentloaded", timeout=60_000) as nav:
+                page.get_by_role("link", name="施設 の空きを見る").click()
+            response = nav.value
+            response_status = response.status if response else response_status
+            page.locator('input[name="ShisetsuCode"]').first.wait_for(
+                state="attached", timeout=30_000
+            )
+            html, snapshot_error = self._save_page_snapshot(
+                page, snapshot_directory, f"{date_label}-facility-search"
+            )
+            if snapshot_error:
+                raise ScrapeStructureError("snapshot_error", snapshot_error)
+            facility_radio = page.locator(f"#scd{SUMIZEI_FACILITY_CODE}")
+            if facility_radio.count() != 1:
+                raise ScrapeStructureError(
+                    "facility_not_found",
+                    f"SuMIzei facility code {SUMIZEI_FACILITY_CODE} was not found",
+                )
+
+            step = "facility-selected"
+            with page.expect_navigation(wait_until="domcontentloaded", timeout=60_000) as nav:
+                facility_radio.click()
+            response = nav.value
+            response_status = response.status if response else response_status
+            page.locator('input[name="UseDate"]').first.wait_for(
+                state="attached", timeout=30_000
+            )
+            html, snapshot_error = self._save_page_snapshot(
+                page, snapshot_directory, f"{date_label}-facility-selected"
+            )
+            if snapshot_error:
+                raise ScrapeStructureError("snapshot_error", snapshot_error)
+
+            step = "schedule"
+            with page.expect_navigation(wait_until="domcontentloaded", timeout=60_000) as nav:
+                page.evaluate(
+                    """ymd => {
+                        const form = document.forms.forma;
+                        if (!form || !form.elements.UseDate || !form.elements.ShisetsuCode) {
+                            throw new Error('Expected public availability form is missing');
+                        }
+                        form.elements.UseYM.value = ymd.slice(0, 6);
+                        form.elements.UseDay.value = String(Number(ymd.slice(6, 8)));
+                        form.elements.UseDate.value = ymd;
+                        form.elements.ShisetsuCode.value = '029';
+                        form.elements.disp_span.value = '0';
+                        form.submit();
+                    }""",
+                    ymd,
+                )
+            response = nav.value
+            response_status = response.status if response else response_status
+            try:
+                page.locator(f'input[name="UseDate"][value="{ymd}"]').wait_for(
+                    state="attached", timeout=30_000
+                )
+            except PlaywrightTimeoutError as exc:
+                raise ScrapeStructureError(
+                    "date_selection_failed",
+                    f"The schedule did not switch to {date_label}",
+                ) from exc
+            try:
+                page.locator(".SelectCalendar table.koma-table td.name").first.wait_for(
+                    state="attached", timeout=30_000
+                )
+            except PlaywrightTimeoutError as exc:
+                raise ScrapeStructureError(
+                    "no_schedule_table",
+                    "No SuMIzei court schedule was found",
+                ) from exc
+            html, snapshot_error = self._save_page_snapshot(
+                page, snapshot_directory, f"{date_label}-schedule"
+            )
+            if snapshot_error:
+                raise ScrapeStructureError("snapshot_error", snapshot_error)
+            return PageCapture(
+                html=html,
+                checked_at=checked_at,
+                response_status=response_status,
+            )
+        except ScrapeStructureError as exc:
+            html, snapshot_error = self._save_page_snapshot(
+                page, snapshot_directory, f"{date_label}-{step}-error"
+            )
+            message = str(exc)
+            if snapshot_error:
+                message = f"{message}; {snapshot_error}"
+            return PageCapture(
+                html=html,
+                checked_at=checked_at,
+                response_status=response_status,
+                error_type=exc.error_type,
+                error_message=message,
+            )
+        except PlaywrightTimeoutError as exc:
+            html, snapshot_error = self._save_page_snapshot(
+                page, snapshot_directory, f"{date_label}-{step}-error"
+            )
+            error_type = "navigation_timeout"
+            if step == "schedule":
+                error_type = "date_selection_failed"
+            message = str(exc)
+            if snapshot_error:
+                message = f"{message}; {snapshot_error}"
+            return PageCapture(
+                html=html,
+                checked_at=checked_at,
+                response_status=response_status,
+                error_type=error_type,
+                error_message=message,
+            )
+        except Exception as exc:
+            html, snapshot_error = self._save_page_snapshot(
+                page, snapshot_directory, f"{date_label}-{step}-error"
+            )
+            message = str(exc)
+            if snapshot_error:
+                message = f"{message}; {snapshot_error}"
+            return PageCapture(
+                html=html,
+                checked_at=checked_at,
+                response_status=response_status,
+                error_type="navigation_error",
+                error_message=message,
+            )
         finally:
             context.close()
 
@@ -603,43 +820,194 @@ def scrape_kamoike(
         )
 
 
-def _scrape_with_selector(
-    client: PageClient,
-    facility: Facility,
+def _pixel_width(element: Tag) -> float:
+    match = PIXEL_WIDTH_PATTERN.search(element.get("style", ""))
+    if not match:
+        raise ScrapeStructureError(
+            "unexpected_dom", "A SuMIzei schedule cell has no pixel width"
+        )
+    return float(match.group(1))
+
+
+def _sumizei_cell_minutes(
+    element: Tag,
+    inferred_start: int,
+    inferred_end: int,
     target: TargetDay,
+) -> tuple[int, int]:
+    handler = element.get("onmousedown", "")
+    if not handler:
+        return inferred_start, inferred_end
+    match = SUMIZEI_SLOT_PATTERN.search(handler)
+    if not match:
+        raise ScrapeStructureError(
+            "unexpected_dom", "An available SuMIzei cell has an unknown handler"
+        )
+    if not match.group("resource").startswith(f"{SUMIZEI_FACILITY_CODE}|"):
+        raise ScrapeStructureError(
+            "unexpected_dom", "An available cell belongs to another facility"
+        )
+    expected_date = target.date.strftime("%Y/%m/%d")
+    if match.group("date") != expected_date:
+        raise ScrapeStructureError(
+            "date_selection_failed",
+            f"Expected {expected_date}, got {match.group('date')}",
+        )
+    time_range = match.group("times")
+    start = clock_to_minutes(f"{time_range[0:2]}:{time_range[2:4]}")
+    end = clock_to_minutes(f"{time_range[4:6]}:{time_range[6:8]}")
+    if end <= start:
+        raise ScrapeStructureError(
+            "unexpected_dom", f"Invalid SuMIzei cell time range: {time_range}"
+        )
+    return start, end
+
+
+def parse_sumizei_html(
+    html: str,
+    target: TargetDay,
+    reservation_url: str,
+    checked_at: str,
 ) -> dict[str, Any]:
-    selector = os.getenv(facility.selector_env, "").strip()
-    reservation_url = (
-        facility.url_template.format(date=target.date.isoformat())
-        if facility.url_template
-        else ""
+    """Parse the live P-KASHIKAN court grid without scanning legends."""
+    soup = BeautifulSoup(html, "html.parser")
+    page_text = soup.get_text(" ", strip=True)
+    if any(marker in page_text.lower() for marker in ACCESS_DENIED_MARKERS):
+        raise ScrapeStructureError("access_denied", "Access denied page detected")
+
+    facility_input = soup.select_one(
+        f'input[name="ShisetsuCode"][value="{SUMIZEI_FACILITY_CODE}"]'
     )
-    if not facility.url_template:
-        return pending_result(target, reservation_url, "URL template is not configured")
-    if not selector:
-        return pending_result(
-            target,
-            reservation_url,
-            f"{facility.selector_env} is not configured",
+    if facility_input is None:
+        raise ScrapeStructureError(
+            "facility_not_found",
+            f"SuMIzei facility code {SUMIZEI_FACILITY_CODE} was not found",
         )
+    if not facility_input.has_attr("checked"):
+        raise ScrapeStructureError(
+            "unexpected_dom", "SuMIzei is not the selected facility"
+        )
+
+    use_date = soup.select_one('input[name="UseDate"]')
+    expected_ymd = target.date.strftime("%Y%m%d")
+    if not isinstance(use_date, Tag) or use_date.get("value") != expected_ymd:
+        raise ScrapeStructureError(
+            "date_selection_failed",
+            f"Expected UseDate={expected_ymd}",
+        )
+
+    normalized_text = unicodedata.normalize("NFKC", page_text)
+    if "SuMIzeiテニスコート" not in normalized_text:
+        raise ScrapeStructureError(
+            "unexpected_dom", "The selected facility heading is missing"
+        )
+
+    calendar = soup.select_one(".SelectCalendar")
+    if not isinstance(calendar, Tag) or _is_hidden(calendar):
+        raise ScrapeStructureError(
+            "no_schedule_table", "No visible .SelectCalendar schedule was found"
+        )
+    header = calendar.select_one("table.koma-table th.header")
+    if not isinstance(header, Tag) or header.get_text(" ", strip=True) != "施設":
+        raise ScrapeStructureError(
+            "unexpected_dom", "The SuMIzei time header is missing"
+        )
+    header_cells = header.find_parent("tr").find_all("th", recursive=False)
     try:
-        texts = client.extract_texts(reservation_url, selector)
-    except Exception as exc:
-        return error_result(
-            target,
-            datetime.now(JST).isoformat(timespec="seconds"),
-            reservation_url,
-            "navigation_error",
-            str(exc),
+        hour_labels = [int(cell.get_text(" ", strip=True)) for cell in header_cells[1:]]
+    except ValueError as exc:
+        raise ScrapeStructureError(
+            "unexpected_dom", "The SuMIzei time header is invalid"
+        ) from exc
+    if len(hour_labels) < 2 or hour_labels != list(
+        range(hour_labels[0], hour_labels[-1] + 1)
+    ):
+        raise ScrapeStructureError(
+            "unexpected_dom", f"Unexpected SuMIzei time header: {hour_labels}"
         )
-    # SuMIzei remains a separate adapter pending its live-DOM implementation.
-    if texts:
-        return pending_result(
-            target,
-            reservation_url,
-            "SuMIzei DOM parser is not implemented",
+    grid_start = hour_labels[0] * 60
+    grid_end = (hour_labels[-1] + 1) * 60
+
+    raw_slots: list[dict[str, Any]] = []
+    row_count = 0
+    for table in calendar.select("table.koma-table"):
+        if not isinstance(table, Tag) or _is_hidden(table):
+            continue
+        row = table.select_one("tr")
+        if not isinstance(row, Tag):
+            continue
+        court_element = row.select_one("td.name")
+        if not isinstance(court_element, Tag):
+            continue
+        court_name = court_element.get_text(" ", strip=True)
+        if not court_name:
+            raise ScrapeStructureError(
+                "unexpected_dom", "A SuMIzei court row has no court name"
+            )
+        cells = [
+            cell
+            for cell in row.find_all("td", recursive=False)
+            if isinstance(cell, Tag) and cell is not court_element and not _is_hidden(cell)
+        ]
+        if not cells:
+            raise ScrapeStructureError(
+                "unexpected_dom", f"No state cells for {court_name}"
+            )
+        widths = [_pixel_width(cell) for cell in cells]
+        total_width = sum(widths)
+        if total_width <= 0:
+            raise ScrapeStructureError(
+                "unexpected_dom", f"Invalid cell widths for {court_name}"
+            )
+
+        row_count += 1
+        elapsed_width = 0.0
+        grid_minutes = grid_end - grid_start
+        for cell, width in zip(cells, widths, strict=True):
+            inferred_start = grid_start + round(
+                elapsed_width / total_width * grid_minutes
+            )
+            elapsed_width += width
+            inferred_end = grid_start + round(
+                elapsed_width / total_width * grid_minutes
+            )
+            marker = cell.get_text(" ", strip=True)
+            if marker not in {"●", "○", "〇"}:
+                continue
+            if marker in {"○", "〇"} and not cell.get("onmousedown"):
+                raise ScrapeStructureError(
+                    "unexpected_dom",
+                    f"An internet-available cell for {court_name} has no time data",
+                )
+            segment_start, segment_end = _sumizei_cell_minutes(
+                cell, inferred_start, inferred_end, target
+            )
+            clipped_start = max(segment_start, clock_to_minutes(MONITOR_START))
+            clipped_end = min(segment_end, clock_to_minutes(MONITOR_END))
+            if clipped_end <= clipped_start:
+                continue
+            raw_slots.append(
+                make_availability_slot(
+                    SUMIZEI_FACILITY_ID,
+                    SUMIZEI_FACILITY_NAME,
+                    target.date.isoformat(),
+                    court_name,
+                    clipped_start,
+                    clipped_end,
+                    reservation_url,
+                )
+            )
+
+    if row_count == 0:
+        raise ScrapeStructureError(
+            "unexpected_dom", "The SuMIzei schedule has no visible court rows"
         )
-    return pending_result(target, reservation_url, "No selected elements were found")
+    availability = [
+        slot
+        for slot in merge_consecutive_slots(raw_slots)
+        if slot["duration_minutes"] >= MINIMUM_DURATION_MINUTES
+    ]
+    return success_result(target, checked_at, reservation_url, availability)
 
 
 def scrape_sumizei(
@@ -647,7 +1015,35 @@ def scrape_sumizei(
     facility: Facility,
     target: TargetDay,
 ) -> dict[str, Any]:
-    return _scrape_with_selector(client, facility, target)
+    reservation_url = facility.url_template
+    capture = client.capture_sumizei_schedule(
+        reservation_url,
+        target.date,
+        SNAPSHOT_ROOT / SUMIZEI_FACILITY_ID,
+    )
+    if capture.error_type:
+        return error_result(
+            target,
+            capture.checked_at,
+            reservation_url,
+            capture.error_type,
+            capture.error_message or capture.error_type,
+        )
+    try:
+        return parse_sumizei_html(
+            capture.html,
+            target,
+            reservation_url,
+            capture.checked_at,
+        )
+    except ScrapeStructureError as exc:
+        return error_result(
+            target,
+            capture.checked_at,
+            reservation_url,
+            exc.error_type,
+            str(exc),
+        )
 
 
 def configured_facilities() -> tuple[Facility, ...]:
@@ -661,11 +1057,12 @@ def configured_facilities() -> tuple[Facility, ...]:
             requires_browser=True,
         ),
         Facility(
-            id="sumizei",
-            name="SuMIzei",
-            url_template=os.getenv("SUMIZEI_URL_TEMPLATE", "").strip(),
-            selector_env="SUMIZEI_SLOT_SELECTOR",
+            id=SUMIZEI_FACILITY_ID,
+            name=SUMIZEI_FACILITY_NAME,
+            url_template=SUMIZEI_BASE_URL,
+            selector_env="",
             scraper=scrape_sumizei,
+            requires_browser=True,
         ),
     )
 
@@ -756,6 +1153,14 @@ class _NoopClientContext:
     def extract_texts(self, url: str, selector: str) -> list[str]:
         raise RuntimeError(f"Browser was not configured for {url} ({selector})")
 
+    def capture_sumizei_schedule(
+        self,
+        reservation_url: str,
+        target_date: date,
+        snapshot_directory: Path,
+    ) -> PageCapture:
+        raise RuntimeError(f"Browser was not configured for {reservation_url}")
+
 
 def available_slot_keys(document: dict[str, Any]) -> dict[str, dict[str, Any]]:
     keys: dict[str, dict[str, Any]] = {}
@@ -784,7 +1189,23 @@ def detect_new_availability(
 ) -> list[dict[str, Any]]:
     old_keys = available_slot_keys(previous)
     current_keys = available_slot_keys(current)
-    return [current_keys[key] for key in sorted(current_keys.keys() - old_keys.keys())]
+    previous_statuses: dict[tuple[str, str], str] = {}
+    for facility in previous.get("facilities", []):
+        facility_id = str(facility.get("id", ""))
+        for date_entry in facility.get("dates", []):
+            previous_statuses[(facility_id, str(date_entry.get("date", "")))] = str(
+                date_entry.get("status", "")
+            )
+
+    changes: list[dict[str, Any]] = []
+    for key in sorted(current_keys.keys() - old_keys.keys()):
+        slot = current_keys[key]
+        scope = (str(slot.get("facility_id", "")), str(slot.get("date", "")))
+        previous_status = previous_statuses.get(scope)
+        if previous_status and previous_status != "success":
+            continue
+        changes.append(slot)
+    return changes
 
 
 def build_line_message(changes: list[dict[str, Any]]) -> str:
