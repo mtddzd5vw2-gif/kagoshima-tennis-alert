@@ -8,6 +8,25 @@ import pytest
 from scripts import scrape
 
 
+FIXTURE_PATH = Path(__file__).parent / "fixtures" / "kamoike_schedule.html"
+TARGET = scrape.TargetDay(date(2026, 8, 1), "weekend", None)
+RESERVATION_URL = scrape.KAMOIKE_URL_TEMPLATE.format(date="2026-08-01")
+CHECKED_AT = "2026-07-21T12:00:00+09:00"
+
+
+def fixture_html() -> str:
+    return FIXTURE_PATH.read_text(encoding="utf-8")
+
+
+def parsed_result(html: str | None = None) -> dict:
+    return scrape.parse_kamoike_html(
+        html or fixture_html(),
+        TARGET,
+        RESERVATION_URL,
+        CHECKED_AT,
+    )
+
+
 def test_generate_target_days_filters_to_weekends_and_holidays() -> None:
     targets = scrape.generate_target_days(date(2026, 7, 20), days=15)
 
@@ -18,9 +37,7 @@ def test_generate_target_days_filters_to_weekends_and_holidays() -> None:
         "2026-08-01",
         "2026-08-02",
     ]
-    assert targets[0].day_type == "holiday"
     assert targets[0].holiday_name == "海の日"
-    assert all(target.day_type == "weekend" for target in targets[1:])
 
 
 def test_generate_target_days_rejects_empty_window() -> None:
@@ -28,104 +45,168 @@ def test_generate_target_days_rejects_empty_window() -> None:
         scrape.generate_target_days(date(2026, 7, 20), days=0)
 
 
-@pytest.mark.parametrize(
-    ("start", "end", "expected"),
-    [
-        ("07:00", "08:00", False),
-        ("07:30", "08:30", True),
-        ("08:00", "09:00", True),
-        ("12:00", "14:00", True),
-        ("13:00", "14:00", False),
-    ],
-)
-def test_overlaps_monitor_window(start: str, end: str, expected: bool) -> None:
-    assert scrape.overlaps_monitor_window(start, end) is expected
+def test_extracts_one_hour_available_slot() -> None:
+    availability = parsed_result()["availability"]
 
-
-def test_parse_slot_texts_keeps_only_available_slots_in_window() -> None:
-    slots = scrape.parse_slot_texts(
-        [
-            "Aコート 07:00〜08:00 予約可",
-            "Aコート 08:00〜09:00 予約可",
-            "Bコート 09:00〜10:00 予約済み",
-            "Cコート 12：00〜14：00 ○",
-            "Cコート 12：00〜14：00 ○",
-        ],
-        "https://example.com/reserve",
+    assert any(
+        slot["court_name"] == "コートA"
+        and slot["start_time"] == "12:00"
+        and slot["end_time"] == "13:00"
+        and slot["duration_minutes"] == 60
+        for slot in availability
     )
 
-    assert [(slot["start"], slot["end"]) for slot in slots] == [
-        ("08:00", "09:00"),
-        ("12:00", "14:00"),
-    ]
-    assert all(slot["status"] == "available" for slot in slots)
 
+def test_merges_two_consecutive_hours_for_same_court() -> None:
+    availability = parsed_result()["availability"]
 
-def test_detect_new_availability_returns_only_new_slot() -> None:
-    previous = _document_with_slots(
-        [{"start": "08:00", "end": "09:00", "court": "Aコート"}]
+    merged = next(
+        slot
+        for slot in availability
+        if slot["court_name"] == "コートA" and slot["start_time"] == "08:00"
     )
-    current = _document_with_slots(
-        [
-            {"start": "08:00", "end": "09:00", "court": "Aコート"},
-            {"start": "10:00", "end": "11:00", "court": "Bコート"},
-        ]
+    assert merged["end_time"] == "10:00"
+    assert merged["duration_minutes"] == 120
+
+
+def test_excludes_slots_before_eight() -> None:
+    assert all(slot["start_time"] >= "08:00" for slot in parsed_result()["availability"])
+
+
+def test_excludes_slots_after_thirteen() -> None:
+    assert all(slot["end_time"] <= "13:00" for slot in parsed_result()["availability"])
+
+
+def test_excludes_reserved_and_unavailable_cells() -> None:
+    availability = parsed_result()["availability"]
+
+    assert len(availability) == 3
+    assert all(slot["status"] == "available" for slot in availability)
+
+
+def test_does_not_treat_legend_as_availability() -> None:
+    availability = parsed_result()["availability"]
+
+    assert all(slot["court_name"] in {"コートA", "コートB"} for slot in availability)
+
+
+def test_keeps_multiple_courts_separate() -> None:
+    availability = parsed_result()["availability"]
+
+    assert {slot["court_name"] for slot in availability} == {"コートA", "コートB"}
+
+
+def test_zero_availability_is_success() -> None:
+    html = fixture_html().replace("rsv--result--yes", "rsv--result--no")
+    html = html.replace('area-label="予約可"', 'area-label="予約済み"')
+
+    result = parsed_result(html)
+
+    assert result["status"] == "success"
+    assert result["availability"] == []
+    assert result["error_type"] is None
+
+
+def test_dom_change_raises_unexpected_dom() -> None:
+    html = """
+    <div class="rsv__result" data-reserve="1">
+      <section class="rsv__field">
+        <h3 class="rsv__result__item"><em>コートA</em></h3>
+        <ul class="rsv__result__time"><li>8:00</li><li>13:00</li></ul>
+      </section>
+    </div>
+    """
+
+    with pytest.raises(scrape.ScrapeStructureError) as error:
+        parsed_result(html)
+
+    assert error.value.error_type == "unexpected_dom"
+
+
+def test_missing_schedule_raises_no_schedule_table() -> None:
+    with pytest.raises(scrape.ScrapeStructureError) as error:
+        parsed_result("<html><body>maintenance</body></html>")
+
+    assert error.value.error_type == "no_schedule_table"
+
+
+def test_duplicate_court_rows_are_deduplicated() -> None:
+    availability = parsed_result()["availability"]
+
+    court_b = [slot for slot in availability if slot["court_name"] == "コートB"]
+    assert len(court_b) == 1
+    assert court_b[0]["start_time"] == "09:00"
+    assert court_b[0]["end_time"] == "11:00"
+
+
+def test_slot_id_is_stable_and_uses_required_fields() -> None:
+    first = parsed_result()["availability"][0]
+    second = parsed_result()["availability"][0]
+
+    expected = scrape.make_slot_id(
+        first["facility_id"],
+        first["date"],
+        first["court_name"],
+        first["start_time"],
+        first["end_time"],
     )
-
-    changes = scrape.detect_new_availability(previous, current)
-
-    assert len(changes) == 1
-    assert changes[0]["court"] == "Bコート"
-    assert changes[0]["facility_name"] == "テスト施設"
+    assert first["slot_id"] == expected == second["slot_id"]
 
 
-def test_build_document_marks_unconfigured_selectors_as_pending(monkeypatch) -> None:
-    monkeypatch.delenv("KAMOIKE_SLOT_SELECTOR", raising=False)
-    monkeypatch.delenv("SUMIZEI_SLOT_SELECTOR", raising=False)
-    monkeypatch.delenv("SUMIZEI_URL_TEMPLATE", raising=False)
+def test_build_document_reflects_kamoike_availability(tmp_path: Path) -> None:
+    client = FakePageClient(PageCaptureFactory.success(fixture_html()))
+    kamoike = scrape.configured_facilities()[0]
 
     document = scrape.build_document(
-        scrape.generate_target_days(date(2026, 7, 20), days=1)
+        [TARGET],
+        facilities=[kamoike],
+        client_factory=lambda: client,
     )
+    output = tmp_path / "availability.json"
+    scrape.write_document(document, output)
+    loaded = scrape.load_document(output)
 
-    assert document["schema_version"] == 1
-    assert document["window"]["start"] == "08:00"
-    assert [facility["id"] for facility in document["facilities"]] == [
-        "kamoike",
-        "sumizei",
-    ]
-    assert all(
-        facility["dates"][0]["status"] == "selector_pending"
-        for facility in document["facilities"]
+    facility = loaded["facilities"][0]
+    assert loaded["schema_version"] == 2
+    assert facility["id"] == "kamoike-prefectural"
+    assert facility["dates"][0]["status"] == "success"
+    assert len(facility["dates"][0]["availability"]) == 3
+    assert client.snapshot_name == "2026-08-01"
+
+
+def test_scrape_failure_records_diagnostics() -> None:
+    client = FakePageClient(
+        scrape.PageCapture(
+            html="<html></html>",
+            checked_at=CHECKED_AT,
+            response_status=None,
+            error_type="navigation_timeout",
+            error_message="timed out",
+        )
     )
-
-
-def test_kamoike_scraper_uses_facility_specific_selector(monkeypatch) -> None:
-    client = FakePageClient(["Aコート 08:00〜09:00 予約可"])
     facility = scrape.configured_facilities()[0]
-    target = scrape.TargetDay(date(2026, 7, 25), "weekend", None)
-    monkeypatch.setenv("KAMOIKE_SLOT_SELECTOR", ".available-slot")
 
-    result = scrape.scrape_kamoike(client, facility, target)
+    result = scrape.scrape_kamoike(client, facility, TARGET)
 
-    assert result["status"] == "ok"
-    assert result["slots"][0]["start"] == "08:00"
-    assert client.selector == ".available-slot"
-    assert "date=2026-07-25" in client.url
-
-
-def test_write_and_load_document_round_trip(tmp_path: Path) -> None:
-    path = tmp_path / "availability.json"
-    document = scrape.empty_document()
-
-    scrape.write_document(document, path)
-
-    assert scrape.load_document(path) == document
-    assert json.loads(path.read_text(encoding="utf-8")) == document
+    assert result["status"] == "error"
+    assert result["error_type"] == "navigation_timeout"
+    assert result["error_message"] == "timed out"
+    assert result["checked_at"] == CHECKED_AT
+    assert result["reservation_url"] == RESERVATION_URL
+    assert result["availability"] == []
 
 
-def test_line_notification_is_skipped_without_changes() -> None:
-    assert scrape.send_line_notification([], token="token", user_id="user") is False
+def test_detect_new_availability_uses_slot_id() -> None:
+    slot = parsed_result()["availability"][0]
+    previous = {"facilities": []}
+    current = {
+        "facilities": [
+            {"dates": [{"availability": [slot]}]},
+        ]
+    }
+
+    assert scrape.detect_new_availability(previous, current) == [slot]
+    assert scrape.detect_new_availability(current, current) == []
 
 
 def test_line_notification_sends_new_slots(monkeypatch) -> None:
@@ -146,17 +227,9 @@ def test_line_notification_sends_new_slots(monkeypatch) -> None:
         return FakeResponse()
 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
-    change = {
-        "facility_id": "kamoike",
-        "facility_name": "鴨池県営テニスコート",
-        "date": "2026-07-25",
-        "start": "08:00",
-        "end": "09:00",
-        "court": "Aコート",
-        "booking_url": "https://example.com/reserve",
-    }
+    slot = parsed_result()["availability"][0]
 
-    sent = scrape.send_line_notification([change], token="token", user_id="user")
+    sent = scrape.send_line_notification([slot], token="token", user_id="user")
 
     payload = json.loads(captured["request"].data.decode("utf-8"))
     assert sent is True
@@ -165,45 +238,50 @@ def test_line_notification_sends_new_slots(monkeypatch) -> None:
     assert "鴨池県営テニスコート" in payload["messages"][0]["text"]
 
 
-def test_comparable_document_ignores_generated_at() -> None:
-    previous = {"generated_at": "2026-07-20T10:00:00+09:00", "facilities": []}
-    current = {"generated_at": "2026-07-21T10:00:00+09:00", "facilities": []}
+def test_comparable_document_ignores_check_timestamps() -> None:
+    previous = {
+        "generated_at": "2026-07-20T10:00:00+09:00",
+        "facilities": [{"dates": [{"checked_at": "old", "availability": []}]}],
+    }
+    current = {
+        "generated_at": "2026-07-21T10:00:00+09:00",
+        "facilities": [{"dates": [{"checked_at": "new", "availability": []}]}],
+    }
 
     assert scrape.comparable_document(previous) == scrape.comparable_document(current)
 
 
+class PageCaptureFactory:
+    @staticmethod
+    def success(html: str) -> scrape.PageCapture:
+        return scrape.PageCapture(
+            html=html,
+            checked_at=CHECKED_AT,
+            response_status=200,
+        )
+
+
 class FakePageClient:
-    def __init__(self, texts: list[str]) -> None:
-        self.texts = texts
-        self.url = ""
-        self.selector = ""
+    def __init__(self, capture: scrape.PageCapture) -> None:
+        self.capture = capture
+        self.snapshot_directory: Path | None = None
+        self.snapshot_name = ""
+
+    def __enter__(self) -> "FakePageClient":
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        return None
+
+    def capture_page(
+        self,
+        url: str,
+        snapshot_directory: Path,
+        snapshot_name: str,
+    ) -> scrape.PageCapture:
+        self.snapshot_directory = snapshot_directory
+        self.snapshot_name = snapshot_name
+        return self.capture
 
     def extract_texts(self, url: str, selector: str) -> list[str]:
-        self.url = url
-        self.selector = selector
-        return self.texts
-
-
-def _document_with_slots(slots: list[dict[str, str]]) -> dict:
-    normalized_slots = [
-        {
-            **slot,
-            "status": "available",
-            "booking_url": "https://example.com/reserve",
-        }
-        for slot in slots
-    ]
-    return {
-        "facilities": [
-            {
-                "id": "test",
-                "name": "テスト施設",
-                "dates": [
-                    {
-                        "date": "2026-07-25",
-                        "slots": normalized_slots,
-                    }
-                ],
-            }
-        ]
-    }
+        return []

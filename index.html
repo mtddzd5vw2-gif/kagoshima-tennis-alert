@@ -112,26 +112,37 @@
         block.append(heading);
 
         if (dateEntry.status === "error") {
-          block.append(element("p", "status error", `取得エラー: ${dateEntry.message || "詳細不明"}`));
+          block.append(element(
+            "p",
+            "status error",
+            `取得エラー: ${dateEntry.error_message || dateEntry.message || "詳細不明"}`
+          ));
           return block;
         }
         if (dateEntry.status === "selector_pending") {
           block.append(element("p", "status", "施設の取得設定を調整中です。"));
           return block;
         }
-        if (!dateEntry.slots?.length) {
+        const availability = dateEntry.availability || dateEntry.slots || [];
+        if (!availability.length) {
           block.append(element("p", "empty", "対象時間帯の空き候補はありません。"));
           return block;
         }
 
         const slots = element("div", "slots");
-        dateEntry.slots.forEach((slot) => {
+        availability.forEach((slot) => {
           const link = element("a", "slot");
-          link.href = slot.booking_url;
+          link.href = slot.reservation_url || slot.booking_url;
           link.target = "_blank";
           link.rel = "noopener noreferrer";
-          link.append(element("strong", "", `${slot.start}〜${slot.end}`));
-          link.append(document.createTextNode(slot.court || "コート情報を見る"));
+          link.append(element(
+            "strong",
+            "",
+            `${slot.start_time || slot.start}〜${slot.end_time || slot.end}`
+          ));
+          link.append(document.createTextNode(
+            slot.court_name || slot.court || "コート情報を見る"
+          ));
           slots.append(link);
         });
         block.append(slots);

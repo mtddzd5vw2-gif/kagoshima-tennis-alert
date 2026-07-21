@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -10,19 +11,31 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Protocol
 
 import jpholiday
+from bs4 import BeautifulSoup, Tag
 
 
 JST = timezone(timedelta(hours=9), name="JST")
 WINDOW_DAYS = 15
 MONITOR_START = time(8, 0)
 MONITOR_END = time(13, 0)
+MINIMUM_DURATION_MINUTES = 60
 DATA_PATH = Path("data/availability.json")
+SNAPSHOT_ROOT = Path("snapshots")
 
-AVAILABLE_KEYWORDS = ("予約可", "空き", "空", "○")
-UNAVAILABLE_KEYWORDS = ("予約済み", "予約不可", "要問合せ", "満", "×")
-TIME_RANGE_PATTERN = re.compile(
-    r"(?P<start>\d{1,2}[:：]\d{2})\s*[〜~\-－–—]\s*"
-    r"(?P<end>\d{1,2}[:：]\d{2})"
+KAMOIKE_FACILITY_ID = "kamoike-prefectural"
+KAMOIKE_FACILITY_NAME = "鴨池県営テニスコート"
+KAMOIKE_URL_TEMPLATE = (
+    "https://v2.spm-cloud.com/user/kamoike-undo/reserves/daily"
+    "?date={date}&category_id=483&area_id=289"
+)
+
+WIDTH_PATTERN = re.compile(r"width\s*:\s*([\d.]+)%", re.IGNORECASE)
+STATE_CLASS_PATTERN = re.compile(r"rsv--result--(yes|no|out)")
+ACCESS_DENIED_MARKERS = (
+    "access denied",
+    "forbidden",
+    "too many requests",
+    "アクセスが拒否",
 )
 
 
@@ -40,14 +53,37 @@ class Facility:
     url_template: str
     selector_env: str
     scraper: Callable[["PageClient", "Facility", TargetDay], dict[str, Any]]
+    requires_browser: bool = False
+
+
+@dataclass(frozen=True)
+class PageCapture:
+    html: str
+    checked_at: str
+    response_status: int | None
+    error_type: str | None = None
+    error_message: str | None = None
+
+
+class ScrapeStructureError(RuntimeError):
+    def __init__(self, error_type: str, message: str) -> None:
+        super().__init__(message)
+        self.error_type = error_type
 
 
 class PageClient(Protocol):
+    def capture_page(
+        self,
+        url: str,
+        snapshot_directory: Path,
+        snapshot_name: str,
+    ) -> PageCapture: ...
+
     def extract_texts(self, url: str, selector: str) -> list[str]: ...
 
 
 class PlaywrightClient:
-    """Small browser boundary so scraping can be replaced in unit tests."""
+    """Browser boundary shared by facility scrapers and replaceable in tests."""
 
     def __init__(self) -> None:
         self._playwright: Any = None
@@ -66,6 +102,114 @@ class PlaywrightClient:
         if self._playwright is not None:
             self._playwright.stop()
 
+    def capture_page(
+        self,
+        url: str,
+        snapshot_directory: Path,
+        snapshot_name: str,
+    ) -> PageCapture:
+        from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
+        if self._browser is None:
+            raise RuntimeError("PlaywrightClient must be used as a context manager")
+
+        snapshot_directory.mkdir(parents=True, exist_ok=True)
+        html_path = snapshot_directory / f"{snapshot_name}.html"
+        image_path = snapshot_directory / f"{snapshot_name}.png"
+        checked_at = datetime.now(JST).isoformat(timespec="seconds")
+        response_status: int | None = None
+        error_type: str | None = None
+        error_message: str | None = None
+
+        context = self._browser.new_context(
+            locale="ja-JP",
+            timezone_id="Asia/Tokyo",
+            viewport={"width": 1440, "height": 1000},
+        )
+        page = context.new_page()
+        try:
+            try:
+                response = page.goto(
+                    url,
+                    wait_until="domcontentloaded",
+                    timeout=60_000,
+                )
+                response_status = response.status if response else None
+                try:
+                    page.wait_for_load_state("networkidle", timeout=15_000)
+                except PlaywrightTimeoutError:
+                    pass
+                try:
+                    page.locator("#app").wait_for(state="attached", timeout=15_000)
+                except PlaywrightTimeoutError:
+                    pass
+                try:
+                    page.locator(".rsv__result[data-reserve]").wait_for(
+                        state="attached",
+                        timeout=20_000,
+                    )
+                except PlaywrightTimeoutError:
+                    pass
+            except PlaywrightTimeoutError as exc:
+                error_type = "navigation_timeout"
+                error_message = str(exc)
+            except Exception as exc:
+                error_type = "navigation_error"
+                error_message = str(exc)
+
+            html = ""
+            for _ in range(3):
+                try:
+                    page.wait_for_load_state("domcontentloaded", timeout=5_000)
+                except PlaywrightTimeoutError:
+                    pass
+                try:
+                    html = page.content()
+                    break
+                except Exception as exc:
+                    error_message = (
+                        f"{error_message}; content capture failed: {exc}"
+                        if error_message
+                        else f"content capture failed: {exc}"
+                    )
+                    page.wait_for_timeout(500)
+            if not html:
+                error_type = error_type or "navigation_error"
+                html = (
+                    "<!doctype html><html><body><h1>Capture failed</h1>"
+                    f"<pre>{error_message or error_type}</pre></body></html>"
+                )
+            html_path.write_text(html, encoding="utf-8")
+            for _ in range(3):
+                try:
+                    page.screenshot(path=str(image_path), full_page=True)
+                    break
+                except Exception as exc:
+                    screenshot_error = f"screenshot failed: {exc}"
+                    error_message = (
+                        f"{error_message}; {screenshot_error}"
+                        if error_message
+                        else screenshot_error
+                    )
+                    page.wait_for_timeout(500)
+            if not image_path.exists():
+                error_type = error_type or "snapshot_error"
+                error_message = error_message or "Screenshot could not be saved"
+
+            if response_status in {401, 403, 429}:
+                error_type = "access_denied"
+                error_message = f"HTTP {response_status}"
+
+            return PageCapture(
+                html=html,
+                checked_at=checked_at,
+                response_status=response_status,
+                error_type=error_type,
+                error_message=error_message,
+            )
+        finally:
+            context.close()
+
     def extract_texts(self, url: str, selector: str) -> list[str]:
         if self._browser is None:
             raise RuntimeError("PlaywrightClient must be used as a context manager")
@@ -77,10 +221,6 @@ class PlaywrightClient:
         page = context.new_page()
         try:
             page.goto(url, wait_until="domcontentloaded", timeout=60_000)
-            try:
-                page.wait_for_load_state("networkidle", timeout=15_000)
-            except Exception:
-                pass
             return page.locator(selector).all_inner_texts()
         finally:
             context.close()
@@ -112,79 +252,318 @@ def parse_clock(value: str) -> time:
     return time(hour, minute)
 
 
+def clock_to_minutes(value: str | time) -> int:
+    parsed = parse_clock(value) if isinstance(value, str) else value
+    return parsed.hour * 60 + parsed.minute
+
+
+def minutes_to_clock(value: int) -> str:
+    return f"{value // 60:02d}:{value % 60:02d}"
+
+
 def overlaps_monitor_window(start: str, end: str) -> bool:
     slot_start = parse_clock(start)
     slot_end = parse_clock(end)
     return max(slot_start, MONITOR_START) < min(slot_end, MONITOR_END)
 
 
-def parse_slot_texts(texts: Iterable[str], booking_url: str) -> list[dict[str, str]]:
-    """Parse candidate text after a facility-specific DOM selector has narrowed it."""
-    slots: list[dict[str, str]] = []
-    seen: set[tuple[str, str, str]] = set()
+def make_slot_id(
+    facility_id: str,
+    target_date: str,
+    court_name: str,
+    start_time: str,
+    end_time: str,
+) -> str:
+    source = "|".join(
+        (facility_id, target_date, court_name, start_time, end_time)
+    )
+    return hashlib.sha256(source.encode("utf-8")).hexdigest()[:24]
 
-    for raw_text in texts:
-        text_value = re.sub(r"\s+", " ", raw_text or "").strip()
-        if not text_value or any(word in text_value for word in UNAVAILABLE_KEYWORDS):
-            continue
-        if not any(word in text_value for word in AVAILABLE_KEYWORDS):
-            continue
 
-        for match in TIME_RANGE_PATTERN.finditer(text_value):
-            start = match.group("start").replace("：", ":").zfill(5)
-            end = match.group("end").replace("：", ":").zfill(5)
-            if not overlaps_monitor_window(start, end):
-                continue
+def make_availability_slot(
+    facility_id: str,
+    facility_name: str,
+    target_date: str,
+    court_name: str,
+    start_minutes: int,
+    end_minutes: int,
+    reservation_url: str,
+) -> dict[str, Any]:
+    start_time = minutes_to_clock(start_minutes)
+    end_time = minutes_to_clock(end_minutes)
+    return {
+        "facility_id": facility_id,
+        "facility_name": facility_name,
+        "date": target_date,
+        "court_name": court_name,
+        "start_time": start_time,
+        "end_time": end_time,
+        "duration_minutes": end_minutes - start_minutes,
+        "status": "available",
+        "reservation_url": reservation_url,
+        "slot_id": make_slot_id(
+            facility_id,
+            target_date,
+            court_name,
+            start_time,
+            end_time,
+        ),
+    }
 
-            key = (start, end, text_value)
-            if key in seen:
-                continue
-            seen.add(key)
-            slots.append(
-                {
-                    "start": start,
-                    "end": end,
-                    "court": text_value[:200],
-                    "status": "available",
-                    "booking_url": booking_url,
-                }
+
+def _style_width(element: Tag) -> float:
+    match = WIDTH_PATTERN.search(element.get("style", ""))
+    if not match:
+        raise ScrapeStructureError(
+            "unexpected_dom",
+            "A reservation state cell has no percentage width",
+        )
+    return float(match.group(1))
+
+
+def _is_hidden(element: Tag) -> bool:
+    if element.has_attr("hidden") or element.get("aria-hidden") == "true":
+        return True
+    style = element.get("style", "").replace(" ", "").lower()
+    return "display:none" in style or "visibility:hidden" in style
+
+
+def merge_consecutive_slots(slots: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return only merged ranges; atomic ranges are not retained separately."""
+    deduplicated = {slot["slot_id"]: dict(slot) for slot in slots}
+    ordered = sorted(
+        deduplicated.values(),
+        key=lambda slot: (
+            slot["date"],
+            natural_sort_key(slot["court_name"]),
+            slot["start_time"],
+            slot["end_time"],
+        ),
+    )
+    merged: list[dict[str, Any]] = []
+
+    for slot in ordered:
+        if (
+            merged
+            and merged[-1]["date"] == slot["date"]
+            and merged[-1]["court_name"] == slot["court_name"]
+            and merged[-1]["end_time"] == slot["start_time"]
+        ):
+            current = merged[-1]
+            current["end_time"] = slot["end_time"]
+            current["duration_minutes"] += slot["duration_minutes"]
+            current["slot_id"] = make_slot_id(
+                current["facility_id"],
+                current["date"],
+                current["court_name"],
+                current["start_time"],
+                current["end_time"],
             )
+        else:
+            merged.append(dict(slot))
+    return merged
 
-    return slots
+
+def natural_sort_key(value: str) -> tuple[Any, ...]:
+    return tuple(
+        int(part) if part.isdigit() else part
+        for part in re.split(r"(\d+)", value)
+    )
 
 
-def _pending_result(target: TargetDay, message: str) -> dict[str, Any]:
+def parse_kamoike_html(
+    html: str,
+    target: TargetDay,
+    reservation_url: str,
+    checked_at: str,
+) -> dict[str, Any]:
+    """Parse Vue-rendered court rows observed on the live reservation page."""
+    soup = BeautifulSoup(html, "html.parser")
+    page_text = soup.get_text(" ", strip=True).lower()
+    if any(marker in page_text for marker in ACCESS_DENIED_MARKERS):
+        raise ScrapeStructureError("access_denied", "Access denied page detected")
+
+    roots = [
+        root
+        for root in soup.select(".rsv__result[data-reserve]")
+        if isinstance(root, Tag) and not _is_hidden(root)
+    ]
+    if not roots:
+        raise ScrapeStructureError(
+            "no_schedule_table",
+            "No visible .rsv__result[data-reserve] schedule was found",
+        )
+
+    raw_slots: list[dict[str, Any]] = []
+    row_count = 0
+    for root in roots:
+        for field in root.select(":scope > section.rsv__field"):
+            if not isinstance(field, Tag) or _is_hidden(field):
+                continue
+            court_element = field.select_one(
+                "h3.rsv__result__item:not(.major--item--color) em"
+            )
+            if court_element is None:
+                continue
+            court_name = court_element.get_text(" ", strip=True)
+            if not court_name:
+                raise ScrapeStructureError(
+                    "unexpected_dom",
+                    "A court row has no court name",
+                )
+
+            time_elements = field.select(".rsv__result__time > li")
+            state_elements = field.select(".rsv__result__situation > li")
+            if len(time_elements) < 2 or not state_elements:
+                raise ScrapeStructureError(
+                    "unexpected_dom",
+                    f"Missing time header or state cells for {court_name}",
+                )
+
+            time_labels = [
+                element.get_text(" ", strip=True) for element in time_elements
+            ]
+            try:
+                grid_start = clock_to_minutes(time_labels[0])
+                grid_end = clock_to_minutes(time_labels[-1])
+            except (ValueError, IndexError) as exc:
+                raise ScrapeStructureError(
+                    "unexpected_dom",
+                    f"Invalid time header for {court_name}: {time_labels}",
+                ) from exc
+            if grid_end <= grid_start:
+                raise ScrapeStructureError(
+                    "unexpected_dom",
+                    f"Invalid time range for {court_name}: {time_labels}",
+                )
+
+            active_cells: list[tuple[Tag, str, float]] = []
+            for element in state_elements:
+                if not isinstance(element, Tag):
+                    continue
+                state_match = STATE_CLASS_PATTERN.search(" ".join(element.get("class", [])))
+                if state_match:
+                    active_cells.append(
+                        (element, state_match.group(1), _style_width(element))
+                    )
+            if not active_cells:
+                raise ScrapeStructureError(
+                    "unexpected_dom",
+                    f"No classified reservation cells for {court_name}",
+                )
+
+            active_width = sum(width for _, _, width in active_cells)
+            if active_width <= 0:
+                raise ScrapeStructureError(
+                    "unexpected_dom",
+                    f"Invalid reservation cell widths for {court_name}",
+                )
+
+            row_count += 1
+            elapsed_width = 0.0
+            grid_minutes = grid_end - grid_start
+            for element, state, width in active_cells:
+                segment_start = grid_start + round(
+                    elapsed_width / active_width * grid_minutes
+                )
+                elapsed_width += width
+                segment_end = grid_start + round(
+                    elapsed_width / active_width * grid_minutes
+                )
+                if state != "yes":
+                    continue
+
+                icon = element.select_one("i")
+                label = None
+                if isinstance(icon, Tag):
+                    label = icon.get("aria-label") or icon.get("area-label")
+                if label and label != "予約可":
+                    continue
+
+                clipped_start = max(segment_start, clock_to_minutes(MONITOR_START))
+                clipped_end = min(segment_end, clock_to_minutes(MONITOR_END))
+                if clipped_end <= clipped_start:
+                    continue
+                raw_slots.append(
+                    make_availability_slot(
+                        KAMOIKE_FACILITY_ID,
+                        KAMOIKE_FACILITY_NAME,
+                        target.date.isoformat(),
+                        court_name,
+                        clipped_start,
+                        clipped_end,
+                        reservation_url,
+                    )
+                )
+
+    if row_count == 0:
+        raise ScrapeStructureError(
+            "unexpected_dom",
+            "The schedule has no visible court rows",
+        )
+
+    availability = [
+        slot
+        for slot in merge_consecutive_slots(raw_slots)
+        if slot["duration_minutes"] >= MINIMUM_DURATION_MINUTES
+    ]
+    return success_result(target, checked_at, reservation_url, availability)
+
+
+def success_result(
+    target: TargetDay,
+    checked_at: str,
+    reservation_url: str,
+    availability: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "date": target.date.isoformat(),
+        "day_type": target.day_type,
+        "holiday_name": target.holiday_name,
+        "status": "success",
+        "error_type": None,
+        "error_message": None,
+        "checked_at": checked_at,
+        "reservation_url": reservation_url,
+        "availability": availability,
+    }
+
+
+def error_result(
+    target: TargetDay,
+    checked_at: str,
+    reservation_url: str,
+    error_type: str,
+    error_message: str,
+) -> dict[str, Any]:
+    return {
+        "date": target.date.isoformat(),
+        "day_type": target.day_type,
+        "holiday_name": target.holiday_name,
+        "status": "error",
+        "error_type": error_type,
+        "error_message": error_message,
+        "checked_at": checked_at,
+        "reservation_url": reservation_url,
+        "availability": [],
+    }
+
+
+def pending_result(
+    target: TargetDay,
+    reservation_url: str,
+    message: str,
+) -> dict[str, Any]:
     return {
         "date": target.date.isoformat(),
         "day_type": target.day_type,
         "holiday_name": target.holiday_name,
         "status": "selector_pending",
-        "message": message,
-        "slots": [],
-    }
-
-
-def _scrape_with_selector(
-    client: PageClient,
-    facility: Facility,
-    target: TargetDay,
-) -> dict[str, Any]:
-    selector = os.getenv(facility.selector_env, "").strip()
-    if not selector:
-        return _pending_result(
-            target,
-            f"{facility.selector_env} is not configured",
-        )
-
-    url = facility.url_template.format(date=target.date.isoformat())
-    texts = client.extract_texts(url, selector)
-    return {
-        "date": target.date.isoformat(),
-        "day_type": target.day_type,
-        "holiday_name": target.holiday_name,
-        "status": "ok",
-        "message": None,
-        "slots": parse_slot_texts(texts, url),
+        "error_type": None,
+        "error_message": message,
+        "checked_at": datetime.now(JST).isoformat(timespec="seconds"),
+        "reservation_url": reservation_url,
+        "availability": [],
     }
 
 
@@ -193,8 +572,74 @@ def scrape_kamoike(
     facility: Facility,
     target: TargetDay,
 ) -> dict[str, Any]:
-    """鴨池県営向け。実DOMのセレクタ調整はこの関数境界内で行う。"""
-    return _scrape_with_selector(client, facility, target)
+    reservation_url = facility.url_template.format(date=target.date.isoformat())
+    capture = client.capture_page(
+        reservation_url,
+        SNAPSHOT_ROOT / KAMOIKE_FACILITY_ID,
+        target.date.isoformat(),
+    )
+    if capture.error_type:
+        return error_result(
+            target,
+            capture.checked_at,
+            reservation_url,
+            capture.error_type,
+            capture.error_message or capture.error_type,
+        )
+    try:
+        return parse_kamoike_html(
+            capture.html,
+            target,
+            reservation_url,
+            capture.checked_at,
+        )
+    except ScrapeStructureError as exc:
+        return error_result(
+            target,
+            capture.checked_at,
+            reservation_url,
+            exc.error_type,
+            str(exc),
+        )
+
+
+def _scrape_with_selector(
+    client: PageClient,
+    facility: Facility,
+    target: TargetDay,
+) -> dict[str, Any]:
+    selector = os.getenv(facility.selector_env, "").strip()
+    reservation_url = (
+        facility.url_template.format(date=target.date.isoformat())
+        if facility.url_template
+        else ""
+    )
+    if not facility.url_template:
+        return pending_result(target, reservation_url, "URL template is not configured")
+    if not selector:
+        return pending_result(
+            target,
+            reservation_url,
+            f"{facility.selector_env} is not configured",
+        )
+    try:
+        texts = client.extract_texts(reservation_url, selector)
+    except Exception as exc:
+        return error_result(
+            target,
+            datetime.now(JST).isoformat(timespec="seconds"),
+            reservation_url,
+            "navigation_error",
+            str(exc),
+        )
+    # SuMIzei remains a separate adapter pending its live-DOM implementation.
+    if texts:
+        return pending_result(
+            target,
+            reservation_url,
+            "SuMIzei DOM parser is not implemented",
+        )
+    return pending_result(target, reservation_url, "No selected elements were found")
 
 
 def scrape_sumizei(
@@ -202,23 +647,18 @@ def scrape_sumizei(
     facility: Facility,
     target: TargetDay,
 ) -> dict[str, Any]:
-    """SuMIzei向け。実DOMのセレクタ調整はこの関数境界内で行う。"""
-    if not facility.url_template:
-        return _pending_result(target, "SUMIZEI_URL_TEMPLATE is not configured")
     return _scrape_with_selector(client, facility, target)
 
 
 def configured_facilities() -> tuple[Facility, ...]:
     return (
         Facility(
-            id="kamoike",
-            name="鴨池県営テニスコート",
-            url_template=(
-                "https://v2.spm-cloud.com/user/kamoike-undo/reserves/daily"
-                "?date={date}&category_id=483&area_id=289"
-            ),
-            selector_env="KAMOIKE_SLOT_SELECTOR",
+            id=KAMOIKE_FACILITY_ID,
+            name=KAMOIKE_FACILITY_NAME,
+            url_template=KAMOIKE_URL_TEMPLATE,
+            selector_env="",
             scraper=scrape_kamoike,
+            requires_browser=True,
         ),
         Facility(
             id="sumizei",
@@ -232,12 +672,13 @@ def configured_facilities() -> tuple[Facility, ...]:
 
 def empty_document() -> dict[str, Any]:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "generated_at": None,
         "window": {
             "days": WINDOW_DAYS,
             "start": MONITOR_START.strftime("%H:%M"),
             "end": MONITOR_END.strftime("%H:%M"),
+            "minimum_duration_minutes": MINIMUM_DURATION_MINUTES,
             "timezone": "Asia/Tokyo",
         },
         "facilities": [],
@@ -251,15 +692,15 @@ def build_document(
 ) -> dict[str, Any]:
     selected_facilities = tuple(facilities or configured_facilities())
     needs_browser = any(
-        facility.url_template and os.getenv(facility.selector_env, "").strip()
+        facility.requires_browser
+        or (
+            facility.url_template
+            and facility.selector_env
+            and os.getenv(facility.selector_env, "").strip()
+        )
         for facility in selected_facilities
     )
-
-    client_context: Any
-    if needs_browser:
-        client_context = client_factory()
-    else:
-        client_context = _NoopClientContext()
+    client_context: Any = client_factory() if needs_browser else _NoopClientContext()
 
     facility_results: list[dict[str, Any]] = []
     with client_context as client:
@@ -269,15 +710,19 @@ def build_document(
                 try:
                     dates.append(facility.scraper(client, facility, target))
                 except Exception as exc:
+                    reservation_url = (
+                        facility.url_template.format(date=target.date.isoformat())
+                        if facility.url_template
+                        else ""
+                    )
                     dates.append(
-                        {
-                            "date": target.date.isoformat(),
-                            "day_type": target.day_type,
-                            "holiday_name": target.holiday_name,
-                            "status": "error",
-                            "message": str(exc),
-                            "slots": [],
-                        }
+                        error_result(
+                            target,
+                            datetime.now(JST).isoformat(timespec="seconds"),
+                            reservation_url,
+                            "unexpected_error",
+                            str(exc),
+                        )
                     )
             facility_results.append(
                 {
@@ -300,51 +745,55 @@ class _NoopClientContext:
     def __exit__(self, *_: object) -> None:
         return None
 
+    def capture_page(
+        self,
+        url: str,
+        snapshot_directory: Path,
+        snapshot_name: str,
+    ) -> PageCapture:
+        raise RuntimeError(f"Browser was not configured for {url}")
+
     def extract_texts(self, url: str, selector: str) -> list[str]:
         raise RuntimeError(f"Browser was not configured for {url} ({selector})")
 
 
-def available_slot_keys(document: dict[str, Any]) -> dict[tuple[str, ...], dict[str, str]]:
-    keys: dict[tuple[str, ...], dict[str, str]] = {}
+def available_slot_keys(document: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    keys: dict[str, dict[str, Any]] = {}
     for facility in document.get("facilities", []):
         for date_entry in facility.get("dates", []):
-            for slot in date_entry.get("slots", []):
+            slots = date_entry.get("availability", date_entry.get("slots", []))
+            for slot in slots:
                 if slot.get("status") != "available":
                     continue
-                key = (
-                    str(facility.get("id", "")),
-                    str(date_entry.get("date", "")),
-                    str(slot.get("start", "")),
-                    str(slot.get("end", "")),
-                    str(slot.get("court", "")),
-                )
-                keys[key] = {
-                    "facility_id": key[0],
-                    "facility_name": str(facility.get("name", key[0])),
-                    "date": key[1],
-                    "start": key[2],
-                    "end": key[3],
-                    "court": key[4],
-                    "booking_url": str(slot.get("booking_url", "")),
-                }
+                slot_id = slot.get("slot_id")
+                if not slot_id:
+                    slot_id = make_slot_id(
+                        str(slot.get("facility_id", facility.get("id", ""))),
+                        str(slot.get("date", date_entry.get("date", ""))),
+                        str(slot.get("court_name", slot.get("court", ""))),
+                        str(slot.get("start_time", slot.get("start", ""))),
+                        str(slot.get("end_time", slot.get("end", ""))),
+                    )
+                keys[str(slot_id)] = dict(slot)
     return keys
 
 
 def detect_new_availability(
     previous: dict[str, Any],
     current: dict[str, Any],
-) -> list[dict[str, str]]:
+) -> list[dict[str, Any]]:
     old_keys = available_slot_keys(previous)
     current_keys = available_slot_keys(current)
     return [current_keys[key] for key in sorted(current_keys.keys() - old_keys.keys())]
 
 
-def build_line_message(changes: list[dict[str, str]]) -> str:
+def build_line_message(changes: list[dict[str, Any]]) -> str:
     lines = ["【テニスコート空き情報】", "新しい空き候補が見つかりました。"]
     for change in changes[:10]:
         lines.append(
             f"・{change['facility_name']} {change['date']} "
-            f"{change['start']}〜{change['end']} {change['court']}"
+            f"{change['start_time']}〜{change['end_time']} "
+            f"{change['court_name']}"
         )
     if len(changes) > 10:
         lines.append(f"ほか {len(changes) - 10} 件")
@@ -352,7 +801,7 @@ def build_line_message(changes: list[dict[str, str]]) -> str:
 
 
 def send_line_notification(
-    changes: list[dict[str, str]],
+    changes: list[dict[str, Any]],
     token: str | None = None,
     user_id: str | None = None,
 ) -> bool:
@@ -400,8 +849,11 @@ def write_document(document: dict[str, Any], path: Path = DATA_PATH) -> None:
 
 
 def comparable_document(document: dict[str, Any]) -> dict[str, Any]:
-    comparable = dict(document)
+    comparable = json.loads(json.dumps(document))
     comparable.pop("generated_at", None)
+    for facility in comparable.get("facilities", []):
+        for date_entry in facility.get("dates", []):
+            date_entry.pop("checked_at", None)
     return comparable
 
 
@@ -415,9 +867,7 @@ def main() -> int:
         result = "updated"
     else:
         result = "unchanged"
-    print(
-        f"target_days={len(targets)} new_slots={len(changes)} data={result}"
-    )
+    print(f"target_days={len(targets)} new_slots={len(changes)} data={result}")
     send_line_notification(changes)
     return 0
 

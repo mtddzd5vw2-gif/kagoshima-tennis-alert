@@ -25,7 +25,6 @@ jobs:
     env:
       LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
       LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
-      KAMOIKE_SLOT_SELECTOR: ${{ vars.KAMOIKE_SLOT_SELECTOR }}
       SUMIZEI_URL_TEMPLATE: ${{ vars.SUMIZEI_URL_TEMPLATE }}
       SUMIZEI_SLOT_SELECTOR: ${{ vars.SUMIZEI_SLOT_SELECTOR }}
 
@@ -49,6 +48,15 @@ jobs:
 
       - name: Update availability data
         run: python scripts/scrape.py
+
+      - name: Upload reservation page snapshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reservation-page-snapshots
+          path: snapshots
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Commit changed availability data
         run: |
