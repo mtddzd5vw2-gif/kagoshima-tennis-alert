@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "initialized": true,
-  "updated_at": "2026-07-21T17:37:20+09:00",
+  "updated_at": "2026-07-21T18:08:52+09:00",
   "observed_slot_ids": [
     "15b45d4e78760311645c96b9",
     "203ca5db7a17b3b57cb1dfe0",
@@ -30,5 +30,5 @@
     "b88159f6ce867a4a3ffc2642": "kamoike-prefectural|2026-08-01",
     "e8ef4e0f90807b57938ff3a9": "kamoike-prefectural|2026-08-01"
   },
-  "last_notification_status": "test_notification_succeeded"
+  "last_notification_status": "notification_suppressed_baseline_advanced"
 }
