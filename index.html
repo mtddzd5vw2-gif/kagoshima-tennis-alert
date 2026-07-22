@@ -14,7 +14,7 @@
       }
 
       * { box-sizing: border-box; }
-      body { margin: 0; }
+      body { margin: 0; overflow-x: hidden; }
       header {
         padding: 28px 20px 22px;
         color: white;
@@ -22,8 +22,9 @@
       }
       h1 { margin: 0 0 8px; font-size: clamp(1.45rem, 6vw, 2rem); }
       header p { margin: 0; color: #dcebe1; line-height: 1.6; }
-      main { width: min(100% - 28px, 720px); margin: 20px auto 44px; }
+      main { width: min(calc(100% - 28px), 720px); margin: 20px auto 44px; }
       .summary, .facility, .notice {
+        min-width: 0;
         margin-bottom: 16px;
         padding: 18px;
         border: 1px solid #dce4dc;
@@ -32,32 +33,77 @@
         box-shadow: 0 8px 24px rgb(18 55 42 / 7%);
       }
       .summary { display: grid; gap: 6px; }
-      .label { color: #637168; font-size: .82rem; }
-      .facility h2 { margin: 0 0 14px; font-size: 1.15rem; }
+      .label { color: #59675e; font-size: .82rem; }
+      .summary-count { margin: 8px 0 0; color: #12372a; font-size: 1.05rem; }
+      .summary-breakdown { margin: 0; color: #4f5e54; font-size: .9rem; line-height: 1.5; }
+      .freshness-warning {
+        margin: 10px 0 2px;
+        padding: 12px;
+        border: 1px solid #d89a21;
+        border-radius: 10px;
+        color: #5f3a00;
+        background: #fff3cd;
+        font-size: .9rem;
+        font-weight: 700;
+        line-height: 1.5;
+      }
+      .freshness-warning[hidden] { display: none; }
+      .facility-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+      .facility-header h2 { min-width: 0; margin: 0; font-size: 1.15rem; overflow-wrap: anywhere; }
+      .facility-summary {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: space-between;
+        gap: 6px 12px;
+        margin-top: 10px;
+        color: #59675e;
+        font-size: .86rem;
+      }
+      .availability-count { color: #184f37; }
+      .status-badge {
+        flex: none;
+        padding: 5px 9px;
+        border: 1px solid transparent;
+        border-radius: 999px;
+        font-size: .76rem;
+        font-weight: 700;
+        line-height: 1.2;
+      }
+      .status-normal { border-color: #8bc5a1; color: #12502f; background: #e5f5e9; }
+      .status-partial-error, .status-selector-pending {
+        border-color: #e2ae4b;
+        color: #684000;
+        background: #fff1cf;
+      }
+      .status-error { border-color: #e0a2a2; color: #842020; background: #fde7e7; }
       .date-block { padding: 14px 0; border-top: 1px solid #edf0ed; }
-      .date-block:first-of-type { padding-top: 0; border-top: 0; }
+      .facility-summary + .date-block,
+      .facility-summary + .empty-days-container > .date-block:first-child { margin-top: 14px; }
       .date-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
       .date-title h3 { margin: 0; font-size: 1rem; }
       .badge {
         flex: none;
         padding: 4px 9px;
         border-radius: 999px;
-        color: #7a3b00;
+        color: #684000;
         background: #fff0d8;
         font-size: .75rem;
       }
       .slots { display: grid; gap: 8px; margin-top: 10px; }
       .slot {
         display: block;
+        min-width: 0;
         padding: 12px;
         border-radius: 12px;
         color: #12372a;
         background: #eaf6ed;
         text-decoration: none;
+        overflow-wrap: anywhere;
       }
+      .slot:hover { background: #dff0e4; }
       .slot strong { display: block; margin-bottom: 4px; }
-      .empty, .status { margin: 10px 0 0; color: #6c756f; font-size: .9rem; }
-      .error { color: #a52828; }
+      .empty, .status { margin: 10px 0 0; color: #5e6962; font-size: .9rem; line-height: 1.5; }
+      .error { color: #982525; }
       button {
         width: 100%;
         min-height: 48px;
@@ -69,7 +115,23 @@
         font-weight: 700;
         cursor: pointer;
       }
+      button:hover { background: #18583a; }
+      button:disabled { cursor: wait; opacity: .7; }
+      button:focus-visible, .slot:focus-visible { outline: 3px solid #e1a72f; outline-offset: 3px; }
+      .empty-days-toggle {
+        min-height: 44px;
+        margin-top: 8px;
+        border: 1px solid #b8cbbd;
+        color: #18563a;
+        background: #f4f8f5;
+      }
+      .empty-days-toggle:hover { background: #e8f1eb; }
+      .empty-days-container[hidden] { display: none; }
       footer { padding: 0 20px 28px; color: #69746d; text-align: center; font-size: .8rem; }
+
+      @media (prefers-reduced-motion: reduce) {
+        *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; }
+      }
     </style>
   </head>
   <body>
@@ -78,9 +140,12 @@
       <p>直近15日間の土日祝、8:00〜13:00の空き候補を表示します。</p>
     </header>
     <main>
-      <section class="summary" aria-live="polite">
+      <section class="summary">
         <span class="label">最終更新</span>
         <strong id="updated">読み込み中…</strong>
+        <p id="total-availability" class="summary-count"></p>
+        <p id="facility-counts" class="summary-breakdown"></p>
+        <p id="freshness-warning" class="freshness-warning" aria-live="polite" role="status" hidden></p>
         <span id="window" class="label"></span>
       </section>
       <div id="content"></div>
@@ -88,10 +153,160 @@
     </main>
     <footer>空き状況は候補です。予約前に必ず公式サイトで確認してください。</footer>
 
+    <script id="page-utils">
+      globalThis.AvailabilityPage = (() => {
+        "use strict";
+
+        const FRESHNESS_DELAYED_MINUTES = 60;
+        const FRESHNESS_STALE_MINUTES = 120;
+        const JAPANESE_WEEKDAYS = ["日", "月", "火", "水", "木", "金", "土"];
+
+        function availabilityForDate(dateEntry) {
+          if (!dateEntry || dateEntry.status !== "success") return [];
+          const slots = dateEntry.availability || dateEntry.slots;
+          return Array.isArray(slots) ? slots : [];
+        }
+
+        function countAvailability(facility) {
+          const dates = Array.isArray(facility?.dates) ? facility.dates : [];
+          return dates.reduce((total, entry) => total + availabilityForDate(entry).length, 0);
+        }
+
+        function summarizeFacility(facility) {
+          const dates = Array.isArray(facility?.dates) ? facility.dates : [];
+          const successCount = dates.filter((entry) => entry.status === "success").length;
+          const errorCount = dates.filter((entry) => entry.status === "error").length;
+          const selectorPendingCount = dates.filter((entry) => entry.status === "selector_pending").length;
+          let status = "normal";
+          let statusLabel = "正常";
+
+          if (selectorPendingCount > 0) {
+            status = "selector_pending";
+            statusLabel = "設定調整中";
+          } else if (!dates.length || errorCount === dates.length) {
+            status = "error";
+            statusLabel = "取得エラー";
+          } else if (errorCount > 0 || successCount !== dates.length) {
+            status = "partial_error";
+            statusLabel = "一部取得エラー";
+          }
+
+          const checkedEntries = dates
+            .map((entry) => ({ value: entry.checked_at, time: Date.parse(entry.checked_at) }))
+            .filter((entry) => entry.value && Number.isFinite(entry.time));
+          const latest = checkedEntries.reduce(
+            (current, entry) => (!current || entry.time > current.time ? entry : current),
+            null
+          );
+
+          return {
+            status,
+            statusLabel,
+            latestCheckedAt: latest?.value || null,
+            availabilityCount: countAvailability(facility),
+            successCount,
+            errorCount,
+            selectorPendingCount
+          };
+        }
+
+        function summarizeAllFacilities(data) {
+          const facilities = Array.isArray(data?.facilities) ? data.facilities : [];
+          const summaries = facilities.map((facility) => ({
+            facility,
+            summary: summarizeFacility(facility)
+          }));
+          return {
+            totalAvailability: summaries.reduce(
+              (total, item) => total + item.summary.availabilityCount,
+              0
+            ),
+            facilities: summaries
+          };
+        }
+
+        function formatJapaneseDate(dateString, holidayName) {
+          const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateString || "");
+          if (!match) return dateString || "日付不明";
+          const year = Number(match[1]);
+          const month = Number(match[2]);
+          const day = Number(match[3]);
+          const date = new Date(Date.UTC(year, month - 1, day));
+          if (
+            date.getUTCFullYear() !== year ||
+            date.getUTCMonth() !== month - 1 ||
+            date.getUTCDate() !== day
+          ) return dateString;
+          const weekday = JAPANESE_WEEKDAYS[date.getUTCDay()];
+          const parenthetical = holidayName ? `${weekday}・${holidayName}` : weekday;
+          return `${month}月${day}日（${parenthetical}）`;
+        }
+
+        function getFreshnessStatus(generatedAt, now = new Date()) {
+          const generatedTime = Date.parse(generatedAt);
+          const nowTime = now instanceof Date ? now.getTime() : new Date(now).getTime();
+          if (!generatedAt || !Number.isFinite(generatedTime) || !Number.isFinite(nowTime)) {
+            return {
+              level: "unknown",
+              ageMinutes: null,
+              message: "⚠ 最終更新時刻を確認できません。GitHub Actionsの実行状況を確認してください。"
+            };
+          }
+
+          const ageMinutes = Math.max(0, (nowTime - generatedTime) / 60000);
+          if (ageMinutes <= FRESHNESS_DELAYED_MINUTES) {
+            return { level: "fresh", ageMinutes, message: "" };
+          }
+          if (ageMinutes <= FRESHNESS_STALE_MINUTES) {
+            return {
+              level: "delayed",
+              ageMinutes,
+              message: "⚠ 更新が遅れています。GitHub Actionsの実行状況を確認してください。"
+            };
+          }
+          return {
+            level: "stale",
+            ageMinutes,
+            message: "⚠ 2時間以上更新されていません。GitHub Actionsの実行状況を確認してください。"
+          };
+        }
+
+        function partitionFacilityDates(facility) {
+          const dates = Array.isArray(facility?.dates) ? facility.dates : [];
+          return dates.reduce((parts, entry) => {
+            const isCollapsible = entry.status === "success" && availabilityForDate(entry).length === 0;
+            parts[isCollapsible ? "emptySuccess" : "alwaysVisible"].push(entry);
+            return parts;
+          }, { alwaysVisible: [], emptySuccess: [] });
+        }
+
+        return Object.freeze({
+          FRESHNESS_DELAYED_MINUTES,
+          FRESHNESS_STALE_MINUTES,
+          countAvailability,
+          summarizeFacility,
+          summarizeAllFacilities,
+          formatJapaneseDate,
+          getFreshnessStatus,
+          partitionFacilityDates
+        });
+      })();
+    </script>
     <script>
       const content = document.querySelector("#content");
       const updated = document.querySelector("#updated");
       const windowLabel = document.querySelector("#window");
+      const totalAvailability = document.querySelector("#total-availability");
+      const facilityCounts = document.querySelector("#facility-counts");
+      const freshnessWarning = document.querySelector("#freshness-warning");
+      const reloadButton = document.querySelector("#reload");
+      const {
+        summarizeFacility,
+        summarizeAllFacilities,
+        formatJapaneseDate,
+        getFreshnessStatus,
+        partitionFacilityDates
+      } = globalThis.AvailabilityPage;
 
       function element(tag, className, text) {
         const node = document.createElement(tag);
@@ -100,14 +315,39 @@
         return node;
       }
 
+      function formatTime(dateString) {
+        if (!dateString || !Number.isFinite(Date.parse(dateString))) return "時刻不明";
+        return new Intl.DateTimeFormat("ja-JP", {
+          hour: "2-digit",
+          minute: "2-digit",
+          hour12: false
+        }).format(new Date(dateString));
+      }
+
+      function formatGeneratedAt(dateString) {
+        if (!dateString || !Number.isFinite(Date.parse(dateString))) return "更新時刻不明";
+        return new Intl.DateTimeFormat("ja-JP", {
+          year: "numeric",
+          month: "long",
+          day: "numeric",
+          hour: "2-digit",
+          minute: "2-digit",
+          hour12: false
+        }).format(new Date(dateString));
+      }
+
+      function shortFacilityName(name) {
+        return (name || "施設名不明").replace(/テニスコート$/, "");
+      }
+
       function renderDate(dateEntry) {
         const block = element("section", "date-block");
         const heading = element("div", "date-title");
-        heading.append(element("h3", "", dateEntry.date));
+        heading.append(element("h3", "", formatJapaneseDate(dateEntry.date, dateEntry.holiday_name)));
         heading.append(element(
           "span",
           "badge",
-          dateEntry.holiday_name || (dateEntry.day_type === "weekend" ? "土日" : "対象日")
+          dateEntry.holiday_name ? "祝日" : (dateEntry.day_type === "weekend" ? "土日" : "対象日")
         ));
         block.append(heading);
 
@@ -149,28 +389,99 @@
         return block;
       }
 
+      function renderFacility(facility, index) {
+        const summary = summarizeFacility(facility);
+        const card = element("article", "facility");
+        const header = element("div", "facility-header");
+        header.append(element("h2", "", facility.name));
+        header.append(element(
+          "span",
+          `status-badge status-${summary.status.replaceAll("_", "-")}`,
+          summary.statusLabel
+        ));
+        card.append(header);
+
+        const facilitySummary = element("div", "facility-summary");
+        facilitySummary.append(element(
+          "span",
+          "",
+          `最終確認 ${formatTime(summary.latestCheckedAt)}`
+        ));
+        facilitySummary.append(element(
+          "strong",
+          "availability-count",
+          `空き候補 ${summary.availabilityCount}件`
+        ));
+        card.append(facilitySummary);
+
+        if (!facility.dates?.length) {
+          card.append(element("p", "empty", "対象日のデータはまだありません。"));
+          return card;
+        }
+
+        const { alwaysVisible, emptySuccess } = partitionFacilityDates(facility);
+        alwaysVisible.forEach((entry) => card.append(renderDate(entry)));
+
+        if (emptySuccess.length) {
+          const containerId = `empty-days-${index}`;
+          const emptyContainer = element("div", "empty-days-container");
+          emptyContainer.id = containerId;
+          emptyContainer.hidden = true;
+          emptySuccess.forEach((entry) => emptyContainer.append(renderDate(entry)));
+          card.append(emptyContainer);
+
+          const toggle = element(
+            "button",
+            "empty-days-toggle",
+            `空きなしの日を表示（${emptySuccess.length}日）`
+          );
+          toggle.type = "button";
+          toggle.setAttribute("aria-expanded", "false");
+          toggle.setAttribute("aria-controls", containerId);
+          toggle.addEventListener("click", () => {
+            const willExpand = toggle.getAttribute("aria-expanded") !== "true";
+            toggle.setAttribute("aria-expanded", String(willExpand));
+            emptyContainer.hidden = !willExpand;
+            toggle.textContent = willExpand
+              ? "空きなしの日を隠す"
+              : `空きなしの日を表示（${emptySuccess.length}日）`;
+          });
+          card.append(toggle);
+        }
+
+        return card;
+      }
+
       function render(data) {
         content.replaceChildren();
-        updated.textContent = data.generated_at
-          ? new Intl.DateTimeFormat("ja-JP", { dateStyle: "medium", timeStyle: "short" })
-              .format(new Date(data.generated_at))
-          : "まだ更新されていません";
-        windowLabel.textContent = `${data.window.start}〜${data.window.end}（${data.window.timezone}）`;
+        updated.textContent = formatGeneratedAt(data.generated_at);
+        const allSummary = summarizeAllFacilities(data);
+        totalAvailability.textContent = allSummary.totalAvailability > 0
+          ? `合計${allSummary.totalAvailability}件の空き候補`
+          : "現在、対象時間帯の空き候補はありません";
+        facilityCounts.textContent = allSummary.facilities
+          .map(({ facility, summary }) => `${shortFacilityName(facility.name)} ${summary.availabilityCount}件`)
+          .join(" / ");
 
-        data.facilities.forEach((facility) => {
-          const card = element("article", "facility");
-          card.append(element("h2", "", facility.name));
-          if (!facility.dates?.length) {
-            card.append(element("p", "empty", "対象日のデータはまだありません。"));
-          } else {
-            facility.dates.forEach((entry) => card.append(renderDate(entry)));
-          }
-          content.append(card);
-        });
+        const freshness = getFreshnessStatus(data.generated_at);
+        freshnessWarning.hidden = freshness.level === "fresh";
+        freshnessWarning.textContent = freshness.message;
+        freshnessWarning.dataset.level = freshness.level;
+
+        windowLabel.textContent = data.window
+          ? `${data.window.start}〜${data.window.end}（${data.window.timezone}）`
+          : "対象時間帯不明";
+
+        const facilities = Array.isArray(data.facilities) ? data.facilities : [];
+        facilities.forEach((facility, index) => content.append(renderFacility(facility, index)));
+        if (!facilities.length) {
+          content.append(element("p", "notice error", "施設データがありません。"));
+        }
       }
 
       async function loadAvailability() {
         updated.textContent = "読み込み中…";
+        reloadButton.disabled = true;
         try {
           const response = await fetch(`data/availability.json?t=${Date.now()}`, { cache: "no-store" });
           if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -178,10 +489,17 @@
         } catch (error) {
           content.replaceChildren(element("p", "notice error", `データを読み込めませんでした: ${error.message}`));
           updated.textContent = "取得失敗";
+          totalAvailability.textContent = "";
+          facilityCounts.textContent = "";
+          freshnessWarning.hidden = false;
+          freshnessWarning.textContent = "⚠ 最新データを確認できません。再読み込みしてください。";
+          freshnessWarning.dataset.level = "unknown";
+        } finally {
+          reloadButton.disabled = false;
         }
       }
 
-      document.querySelector("#reload").addEventListener("click", loadAvailability);
+      reloadButton.addEventListener("click", loadAvailability);
       loadAvailability();
     </script>
   </body>
