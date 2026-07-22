@@ -20,8 +20,8 @@ on:
         type: boolean
         default: false
   schedule:
-    # JST 07:00〜23:30 の30分おき（GitHub ActionsのcronはUTC）
-    - cron: "0,30 0-14,22-23 * * *"
+    # JST 07:07〜23:37 の30分おき（GitHub ActionsのcronはUTC）
+    - cron: "7,37 0-14,22-23 * * *"
 
 permissions:
   contents: read
