@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "initialized": true,
-  "updated_at": "2026-07-24T09:38:12+09:00",
+  "updated_at": "2026-07-24T13:08:12+09:00",
   "observed_slot_ids": [
     "15b45d4e78760311645c96b9",
     "22454c5882f8cf8fae88a084",
@@ -18,8 +18,7 @@
     "b88159f6ce867a4a3ffc2642",
     "d0ec75a252b51359d0505292",
     "e8ef4e0f90807b57938ff3a9",
-    "eca2a1a13a5c748bd3d4ae58",
-    "f00f52b656b9e3163d99802b"
+    "eca2a1a13a5c748bd3d4ae58"
   ],
   "observed_slot_scopes": {
     "15b45d4e78760311645c96b9": "kamoike-prefectural|2026-08-01",
@@ -37,8 +36,7 @@
     "b88159f6ce867a4a3ffc2642": "kamoike-prefectural|2026-08-01",
     "d0ec75a252b51359d0505292": "kamoike-prefectural|2026-08-01",
     "e8ef4e0f90807b57938ff3a9": "kamoike-prefectural|2026-08-01",
-    "eca2a1a13a5c748bd3d4ae58": "sumizei|2026-07-26",
-    "f00f52b656b9e3163d99802b": "sumizei|2026-07-26"
+    "eca2a1a13a5c748bd3d4ae58": "sumizei|2026-07-26"
   },
   "last_notification_status": "no_new_slots"
 }
