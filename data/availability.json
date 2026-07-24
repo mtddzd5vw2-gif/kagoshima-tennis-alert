@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "generated_at": "2026-07-24T13:08:12+09:00",
+  "generated_at": "2026-07-24T16:05:44+09:00",
   "window": {
     "days": 15,
     "start": "08:00",
@@ -301,6 +301,94 @@
           "error_message": null,
           "checked_at": "2026-07-24T13:08:10+09:00",
           "reservation_url": "https://k2.p-kashikan.jp/kagoshima-city/",
+          "availability": []
+        }
+      ]
+    },
+    {
+      "id": "toukai-tennis",
+      "name": "東開庭球場",
+      "dates": [
+        {
+          "date": "2026-07-25",
+          "day_type": "weekend",
+          "holiday_name": null,
+          "status": "success",
+          "error_type": null,
+          "error_message": null,
+          "checked_at": "2026-07-24T16:05:36+09:00",
+          "reservation_url": "https://k2.p-kashikan.jp/kagoshima-city/index.php",
+          "availability": [
+            {
+              "facility_id": "toukai-tennis",
+              "facility_name": "東開庭球場",
+              "date": "2026-07-25",
+              "court_name": "C・Dコート(ナイターあり)",
+              "start_time": "11:00",
+              "end_time": "12:00",
+              "duration_minutes": 60,
+              "status": "available",
+              "reservation_url": "https://k2.p-kashikan.jp/kagoshima-city/index.php",
+              "slot_id": "66281022d6f7d8446e6345ce"
+            },
+            {
+              "facility_id": "toukai-tennis",
+              "facility_name": "東開庭球場",
+              "date": "2026-07-25",
+              "court_name": "C・Dコート(ナイターあり)",
+              "start_time": "12:00",
+              "end_time": "13:00",
+              "duration_minutes": 60,
+              "status": "available",
+              "reservation_url": "https://k2.p-kashikan.jp/kagoshima-city/index.php",
+              "slot_id": "74bbddddd4ba8781ccf5833c"
+            }
+          ]
+        },
+        {
+          "date": "2026-07-26",
+          "day_type": "weekend",
+          "holiday_name": null,
+          "status": "success",
+          "error_type": null,
+          "error_message": null,
+          "checked_at": "2026-07-24T16:05:38+09:00",
+          "reservation_url": "https://k2.p-kashikan.jp/kagoshima-city/index.php",
+          "availability": [
+            {
+              "facility_id": "toukai-tennis",
+              "facility_name": "東開庭球場",
+              "date": "2026-07-26",
+              "court_name": "C・Dコート(ナイターあり)",
+              "start_time": "11:00",
+              "end_time": "13:00",
+              "duration_minutes": 120,
+              "status": "available",
+              "reservation_url": "https://k2.p-kashikan.jp/kagoshima-city/index.php",
+              "slot_id": "68847fb01b953c29172fbf79"
+            }
+          ]
+        },
+        {
+          "date": "2026-08-01",
+          "day_type": "weekend",
+          "holiday_name": null,
+          "status": "success",
+          "error_type": null,
+          "error_message": null,
+          "checked_at": "2026-07-24T16:05:40+09:00",
+          "reservation_url": "https://k2.p-kashikan.jp/kagoshima-city/index.php",
+          "availability": []
+        },
+        {
+          "date": "2026-08-02",
+          "day_type": "weekend",
+          "holiday_name": null,
+          "status": "success",
+          "error_type": null,
+          "error_message": null,
+          "checked_at": "2026-07-24T16:05:42+09:00",
+          "reservation_url": "https://k2.p-kashikan.jp/kagoshima-city/index.php",
           "availability": []
         }
       ]

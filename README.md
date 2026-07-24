@@ -3,7 +3,7 @@
 鹿児島県のテニスコート予約サイトを確認し、直近15日間の土日祝にある8:00〜13:00の空き候補を、GitHub PagesとLINEで知らせるプロジェクトです。
 
 > [!IMPORTANT]
-> 鴨池県営テニスコートとSuMIzeiテニスコートは、いずれも認証不要の実画面に対応済みです。自動予約、ログイン、利用者ID・パスワードの使用や保存は行いません。
+> 鴨池県営テニスコート、SuMIzeiテニスコート、東開庭球場は、いずれも認証不要の実画面に対応済みです。自動予約、ログイン、利用者ID・パスワードの使用や保存は行いません。
 
 ## 現在の機能
 
@@ -11,7 +11,7 @@
 - 8:00〜13:00内で1時間以上ある空きだけを保持
 - 同一コートの連続した空きセルを結合
 - 鴨池県営のVue生成DOMをコート行・時刻ヘッダー・状態セル単位で解析
-- SuMIzeiの公開フォームを施設コード・対象日で遷移し、コート行の状態セルを解析
+- SuMIzeiと東開のP-Kashikan公開フォームを施設設定と対象日で遷移し、共通処理でコート行の状態セルを解析
 - 成功、空き0件、取得エラーを区別して `data/availability.json` に保存
 - 前回データにない `slot_id` だけをLINE通知
 - JSONを読み込むスマートフォン向けGitHub Pages画面
@@ -36,6 +36,7 @@
 ├── tests/
 │   ├── fixtures/kamoike_schedule.html
 │   ├── fixtures/sumizei_schedule.html
+│   ├── fixtures/toukai_schedule.html
 │   ├── test_notifications.py
 │   └── test_scrape.py
 ├── index.html
@@ -43,7 +44,7 @@
 └── README.md
 ```
 
-実行時には鴨池県営を `snapshots/kamoike-prefectural/YYYY-MM-DD.html`、SuMIzeiを `snapshots/sumizei/YYYY-MM-DD-step-name.html` と同名のPNGへ保存します。SuMIzeiはトップ、施設検索、施設選択後、対象日の空き状況を段階別に保存します。スナップショットはGit管理せず、GitHub ActionsのArtifactとして7日間保存します。
+実行時には鴨池県営を `snapshots/kamoike-prefectural/YYYY-MM-DD.html`、P-Kashikanの2施設を `snapshots/{sumizei|toukai-tennis}/YYYY-MM-DD-step-name.html` と同名のPNGへ保存します。P-Kashikanはトップ、施設検索、施設選択後、対象日の空き状況を段階別に保存します。スナップショットはGit管理せず、GitHub ActionsのArtifactとして7日間保存します。
 
 ## 鴨池県営の抽出方式
 
@@ -62,21 +63,23 @@
 
 非表示の予約結果・コート行は除外し、同じ `slot_id` は重複除去します。DOM構造が不足している場合は、空き0件として扱わず `unexpected_dom` を記録します。
 
-## SuMIzeiの抽出方式
+## P-Kashikan施設の抽出方式
 
-2026年7月21日にPlaywrightで認証なしの画面遷移と通信を確認しました。
+SuMIzeiは2026年7月21日、東開は2026年7月24日に、Playwrightで認証なしの画面遷移と通信を確認しました。
 
 1. トップの「施設 の空きを見る」から `index.php` の施設空き状況へ遷移
-2. `input[name="ShisetsuCode"]` から `#scd029`（値 `029`）の「ＳｕＭＩｚｅｉテニスコート」を選択
+2. `input[name="ShisetsuCode"]` から施設設定に一致するラジオボタンを選択
 3. 公開画面が通常使用するフォーム値を対象日に変更して日別画面を表示
 4. `.SelectCalendar` 内の時間ヘッダーとコート行だけを解析
+
+施設設定はSuMIzeiが `#scd029`（値 `029`、画面表記「ＳｕＭＩｚｅｉテニスコート」）、東開が `#scd131`（値 `131`、画面表記「東開庭球場」）です。コードと選択後の施設見出しの両方を照合し、対象が見つからない場合は `facility_not_found` としてその施設だけをエラーにします。
 
 内部APIやJSONエンドポイントは使用されていませんでした。画面遷移は `index.php` への通常のPOSTで、次の値を送信します。
 
 | Form値 | 内容 |
 | --- | --- |
 | `op` | `srch_sst`（施設の空き状況） |
-| `ShisetsuCode` | `029` |
+| `ShisetsuCode` | 施設設定のコード（SuMIzei `029`、東開 `131`） |
 | `UseYM` | `YYYYMM` |
 | `UseDay` | 月内の日 |
 | `UseDate` | `YYYYMMDD` |
@@ -85,13 +88,15 @@
 実DOMでは、時間軸が `.SelectCalendar table.koma-table th`、各コート名が `td.name` にあります。インターネット予約可能な空きセルは `○` と表示され、セルの `id` と `onmousedown` に施設・コート識別子、日付、`HHMMHHMM` 形式の開始・終了時刻が含まれます。実際に確認した例は次の形です。
 
 ```html
-<td id="029|004|...#2026/07/23#1"
-    onmousedown="setAppStatus('029|004|...', '2026/07/23', 1, '09001000', ...);">
+<td id="131|003|...#2026/07/25#1"
+    onmousedown="setAppStatus('131|003|...', '2026/07/25', 0, '08300900', ...);">
   ○
 </td>
 ```
 
-パーサーはコート行内の `●`、`○`、`〇` だけを空き候補とし、`×`、`-`、`確認中`、予約済みなどを除外します。`○` は実属性の時間帯を優先し、`●` は同じ行のセル幅と時間ヘッダーから時間を復元します。凡例は `.SelectCalendar` 外なので解析対象になりません。施設コード、選択日、時間ヘッダー、コート行のいずれかが不整合なら、空き0件ではなく施設単位のエラーにします。
+パーサーはコート行内の `●`、`○`、`〇` だけを空き候補とし、`×`、`-`、`確認中`、予約済み、抽選、メンテナンスなどを除外します。`○` は実属性の時間帯を優先し、`●` は同じ行のセル幅と時間ヘッダーから時間を復元します。凡例は `.SelectCalendar` 外なので解析対象になりません。施設コード、選択日、時間ヘッダー、コート行のいずれかが不整合なら、空き0件ではなく施設単位のエラーにします。
+
+東開の実画面では、コート名は「Aコート(ナイターあり)」「Bコート(ナイターなし)」「C・Dコート(ナイターあり)」です。時間軸は8時台の最初が8:30〜9:00の30分枠、その後は通常60分枠です。監視境界は共通の8:00〜13:00ですが、東開の実データは営業時間に従って8:30からとなり、結合後60分未満の空きは除外します。同じ表示名が複数の内部コート行に現れるため、連続枠はDOM上の同一行内だけで結合してから重複除去します。
 
 ## 連続枠の扱い
 
@@ -124,7 +129,7 @@
 
 - `success`: 正常取得。空きがない場合も `availability: []` で成功
 - `error`: 取得またはDOM解析に失敗。`error_type` と `error_message` を保持
-- `selector_pending`: 旧データとの互換用。現在の2施設では生成しない
+- `selector_pending`: 旧データとの互換用。現在の3施設では生成しない
 
 エラー時も `checked_at`、`reservation_url`、空の `availability` を保存します。主な `error_type` は `navigation_timeout`、`navigation_error`、`access_denied`、`facility_not_found`、`date_selection_failed`、`no_schedule_table`、`unexpected_dom` です。
 
@@ -136,12 +141,13 @@
 
 - `schema_version`: 通知状態のスキーマ
 - `initialized`: 初回基準化が完了したか
+- `initialized_facility_ids`: 初回基準化が完了した施設ID
 - `updated_at`: 状態を最後に変更した日時
 - `observed_slot_ids`: 通知比較で既に観測済みとする `slot_id`
 - `observed_slot_scopes`: 施設・日付単位のエラー復旧を誤通知しないための補助情報
 - `last_notification_status`: 直前の基準化・送信・抑止・失敗状態
 
-ファイルがない、壊れている、または `initialized=false` の場合は、現在の空きを基準として保存するだけで通知しません。リポジトリには現在の既存12件を基準化済みとして登録してあるため、初回Actions実行で12件を一斉通知しません。
+ファイルがない、壊れている、または `initialized=false` の場合は、現在の空きを基準として保存するだけで通知しません。既存の状態に新しい施設が加わった場合は、その施設の正常取得分だけを初回基準化し、同時に既存施設で見つかった新規空きは通常どおり通知候補にします。リポジトリには3施設の現行枠を基準化済みとして登録してあります。
 
 初期化後は現在値と `observed_slot_ids` の差だけを通知します。消えた枠は通知しません。正常取得後に消えた枠を基準から外し、その枠が後日再出現した場合は新規空きとして通知します。施設取得が `error` の間は、その施設・日付の既存IDを保持し、復旧だけを新規空きと誤認しません。
 
@@ -172,7 +178,7 @@ python scripts/scrape.py
 
 鴨池県営には追加のセレクタ設定は不要です。固定パラメータとして `category_id=483`、`area_id=289` を使用し、対象日ごとに `date=YYYY-MM-DD` を付加します。
 
-SuMIzeiも追加のURL・セレクタ設定は不要です。公開トップURL、施設コード `029`、日別表示 `disp_span=0` を固定し、対象日だけを変更します。
+SuMIzeiと東開は共通のP-Kashikan処理を使用します。公開トップURLと日別表示 `disp_span=0` は共通で、施設設定のコード（`029` / `131`）、施設名、対象日だけを変更します。
 
 ## LINE通知
 
@@ -198,7 +204,7 @@ Secretsが未設定の場合は通知だけをスキップし、取得とJSON更
 `Actions` → `Update tennis availability` → `Run workflow` から、次の順序で確認します。
 
 1. `dry_run=true`、他はすべて `false` で実行
-2. `reservation-page-snapshots` Artifact内の2施設のHTML・PNG、`run-output/availability.json`、`run-output/notification-state.json` を確認
+2. `reservation-page-snapshots` Artifact内の3施設のHTML・PNG、`run-output/availability.json`、`run-output/notification-state.json` を確認
 3. `dry_run=false`、`initialize_notification_baseline=true`、他は `false` で基準化
 4. `dry_run=false`、`test_notification=true` で固定テストメッセージを1件送信
 5. `dry_run=false`、`send_notification=true` で実差分通知を確認

@@ -40,13 +40,18 @@ KAMOIKE_URL_TEMPLATE = (
 
 SUMIZEI_FACILITY_ID = "sumizei"
 SUMIZEI_FACILITY_NAME = "SuMIzeiテニスコート"
-SUMIZEI_BASE_URL = "https://k2.p-kashikan.jp/kagoshima-city/"
+P_KASHIKAN_BASE_URL = "https://k2.p-kashikan.jp/kagoshima-city/index.php"
+SUMIZEI_BASE_URL = P_KASHIKAN_BASE_URL
 SUMIZEI_FACILITY_CODE = "029"
+
+TOUKAI_FACILITY_ID = "toukai-tennis"
+TOUKAI_FACILITY_NAME = "東開庭球場"
+TOUKAI_FACILITY_CODE = "131"
 
 WIDTH_PATTERN = re.compile(r"width\s*:\s*([\d.]+)%", re.IGNORECASE)
 STATE_CLASS_PATTERN = re.compile(r"rsv--result--(yes|no|out)")
 PIXEL_WIDTH_PATTERN = re.compile(r"width\s*:\s*([\d.]+)px", re.IGNORECASE)
-SUMIZEI_SLOT_PATTERN = re.compile(
+P_KASHIKAN_SLOT_PATTERN = re.compile(
     r"setAppStatus\(\s*'(?P<resource>[^']+)'\s*,\s*"
     r"'(?P<date>\d{4}/\d{2}/\d{2})'\s*,\s*\d+\s*,\s*"
     r"'(?P<times>\d{8})'"
@@ -74,6 +79,7 @@ class Facility:
     selector_env: str
     scraper: Callable[["PageClient", "Facility", TargetDay], dict[str, Any]]
     requires_browser: bool = False
+    p_kashikan_code: str | None = None
 
 
 @dataclass(frozen=True)
@@ -101,11 +107,13 @@ class PageClient(Protocol):
 
     def extract_texts(self, url: str, selector: str) -> list[str]: ...
 
-    def capture_sumizei_schedule(
+    def capture_p_kashikan_schedule(
         self,
         reservation_url: str,
         target_date: date,
         snapshot_directory: Path,
+        facility_code: str,
+        facility_name: str,
     ) -> PageCapture: ...
 
 
@@ -277,11 +285,13 @@ class PlaywrightClient:
             errors.append(f"screenshot failed: {exc}")
         return html, "; ".join(errors) or None
 
-    def capture_sumizei_schedule(
+    def capture_p_kashikan_schedule(
         self,
         reservation_url: str,
         target_date: date,
         snapshot_directory: Path,
+        facility_code: str,
+        facility_name: str,
     ) -> PageCapture:
         """Follow the anonymous public form flow observed on the live site."""
         from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
@@ -334,11 +344,11 @@ class PlaywrightClient:
             )
             if snapshot_error:
                 raise ScrapeStructureError("snapshot_error", snapshot_error)
-            facility_radio = page.locator(f"#scd{SUMIZEI_FACILITY_CODE}")
+            facility_radio = page.locator(f"#scd{facility_code}")
             if facility_radio.count() != 1:
                 raise ScrapeStructureError(
                     "facility_not_found",
-                    f"SuMIzei facility code {SUMIZEI_FACILITY_CODE} was not found",
+                    f"{facility_name} facility code {facility_code} was not found",
                 )
 
             step = "facility-selected"
@@ -358,7 +368,7 @@ class PlaywrightClient:
             step = "schedule"
             with page.expect_navigation(wait_until="domcontentloaded", timeout=60_000) as nav:
                 page.evaluate(
-                    """ymd => {
+                    """({ ymd, facilityCode }) => {
                         const form = document.forms.forma;
                         if (!form || !form.elements.UseDate || !form.elements.ShisetsuCode) {
                             throw new Error('Expected public availability form is missing');
@@ -366,11 +376,11 @@ class PlaywrightClient:
                         form.elements.UseYM.value = ymd.slice(0, 6);
                         form.elements.UseDay.value = String(Number(ymd.slice(6, 8)));
                         form.elements.UseDate.value = ymd;
-                        form.elements.ShisetsuCode.value = '029';
+                        form.elements.ShisetsuCode.value = facilityCode;
                         form.elements.disp_span.value = '0';
                         form.submit();
                     }""",
-                    ymd,
+                    {"ymd": ymd, "facilityCode": facility_code},
                 )
             response = nav.value
             response_status = response.status if response else response_status
@@ -390,7 +400,7 @@ class PlaywrightClient:
             except PlaywrightTimeoutError as exc:
                 raise ScrapeStructureError(
                     "no_schedule_table",
-                    "No SuMIzei court schedule was found",
+                    f"No {facility_name} court schedule was found",
                 ) from exc
             html, snapshot_error = self._save_page_snapshot(
                 page, snapshot_directory, f"{date_label}-schedule"
@@ -832,26 +842,29 @@ def _pixel_width(element: Tag) -> float:
     match = PIXEL_WIDTH_PATTERN.search(element.get("style", ""))
     if not match:
         raise ScrapeStructureError(
-            "unexpected_dom", "A SuMIzei schedule cell has no pixel width"
+            "unexpected_dom", "A P-Kashikan schedule cell has no pixel width"
         )
     return float(match.group(1))
 
 
-def _sumizei_cell_minutes(
+def _p_kashikan_cell_minutes(
     element: Tag,
     inferred_start: int,
     inferred_end: int,
     target: TargetDay,
+    facility_code: str,
+    facility_name: str,
 ) -> tuple[int, int]:
     handler = element.get("onmousedown", "")
     if not handler:
         return inferred_start, inferred_end
-    match = SUMIZEI_SLOT_PATTERN.search(handler)
+    match = P_KASHIKAN_SLOT_PATTERN.search(handler)
     if not match:
         raise ScrapeStructureError(
-            "unexpected_dom", "An available SuMIzei cell has an unknown handler"
+            "unexpected_dom",
+            f"An available {facility_name} cell has an unknown handler",
         )
-    if not match.group("resource").startswith(f"{SUMIZEI_FACILITY_CODE}|"):
+    if not match.group("resource").startswith(f"{facility_code}|"):
         raise ScrapeStructureError(
             "unexpected_dom", "An available cell belongs to another facility"
         )
@@ -866,16 +879,20 @@ def _sumizei_cell_minutes(
     end = clock_to_minutes(f"{time_range[4:6]}:{time_range[6:8]}")
     if end <= start:
         raise ScrapeStructureError(
-            "unexpected_dom", f"Invalid SuMIzei cell time range: {time_range}"
+            "unexpected_dom",
+            f"Invalid {facility_name} cell time range: {time_range}",
         )
     return start, end
 
 
-def parse_sumizei_html(
+def parse_p_kashikan_html(
     html: str,
     target: TargetDay,
     reservation_url: str,
     checked_at: str,
+    facility_id: str,
+    facility_name: str,
+    facility_code: str,
 ) -> dict[str, Any]:
     """Parse the live P-KASHIKAN court grid without scanning legends."""
     soup = BeautifulSoup(html, "html.parser")
@@ -884,16 +901,16 @@ def parse_sumizei_html(
         raise ScrapeStructureError("access_denied", "Access denied page detected")
 
     facility_input = soup.select_one(
-        f'input[name="ShisetsuCode"][value="{SUMIZEI_FACILITY_CODE}"]'
+        f'input[name="ShisetsuCode"][value="{facility_code}"]'
     )
     if facility_input is None:
         raise ScrapeStructureError(
             "facility_not_found",
-            f"SuMIzei facility code {SUMIZEI_FACILITY_CODE} was not found",
+            f"{facility_name} facility code {facility_code} was not found",
         )
     if not facility_input.has_attr("checked"):
         raise ScrapeStructureError(
-            "unexpected_dom", "SuMIzei is not the selected facility"
+            "unexpected_dom", f"{facility_name} is not the selected facility"
         )
 
     use_date = soup.select_one('input[name="UseDate"]')
@@ -905,7 +922,7 @@ def parse_sumizei_html(
         )
 
     normalized_text = unicodedata.normalize("NFKC", page_text)
-    if "SuMIzeiテニスコート" not in normalized_text:
+    if unicodedata.normalize("NFKC", facility_name) not in normalized_text:
         raise ScrapeStructureError(
             "unexpected_dom", "The selected facility heading is missing"
         )
@@ -918,25 +935,26 @@ def parse_sumizei_html(
     header = calendar.select_one("table.koma-table th.header")
     if not isinstance(header, Tag) or header.get_text(" ", strip=True) != "施設":
         raise ScrapeStructureError(
-            "unexpected_dom", "The SuMIzei time header is missing"
+            "unexpected_dom", f"The {facility_name} time header is missing"
         )
     header_cells = header.find_parent("tr").find_all("th", recursive=False)
     try:
         hour_labels = [int(cell.get_text(" ", strip=True)) for cell in header_cells[1:]]
     except ValueError as exc:
         raise ScrapeStructureError(
-            "unexpected_dom", "The SuMIzei time header is invalid"
+            "unexpected_dom", f"The {facility_name} time header is invalid"
         ) from exc
     if len(hour_labels) < 2 or hour_labels != list(
         range(hour_labels[0], hour_labels[-1] + 1)
     ):
         raise ScrapeStructureError(
-            "unexpected_dom", f"Unexpected SuMIzei time header: {hour_labels}"
+            "unexpected_dom",
+            f"Unexpected {facility_name} time header: {hour_labels}",
         )
     grid_start = hour_labels[0] * 60
     grid_end = (hour_labels[-1] + 1) * 60
 
-    raw_slots: list[dict[str, Any]] = []
+    availability_candidates: list[dict[str, Any]] = []
     row_count = 0
     for table in calendar.select("table.koma-table"):
         if not isinstance(table, Tag) or _is_hidden(table):
@@ -950,7 +968,7 @@ def parse_sumizei_html(
         court_name = court_element.get_text(" ", strip=True)
         if not court_name:
             raise ScrapeStructureError(
-                "unexpected_dom", "A SuMIzei court row has no court name"
+                "unexpected_dom", f"A {facility_name} court row has no court name"
             )
         cells = [
             cell
@@ -969,6 +987,7 @@ def parse_sumizei_html(
             )
 
         row_count += 1
+        row_slots: list[dict[str, Any]] = []
         elapsed_width = 0.0
         grid_minutes = grid_end - grid_start
         for cell, width in zip(cells, widths, strict=True):
@@ -987,17 +1006,22 @@ def parse_sumizei_html(
                     "unexpected_dom",
                     f"An internet-available cell for {court_name} has no time data",
                 )
-            segment_start, segment_end = _sumizei_cell_minutes(
-                cell, inferred_start, inferred_end, target
+            segment_start, segment_end = _p_kashikan_cell_minutes(
+                cell,
+                inferred_start,
+                inferred_end,
+                target,
+                facility_code,
+                facility_name,
             )
             clipped_start = max(segment_start, clock_to_minutes(MONITOR_START))
             clipped_end = min(segment_end, clock_to_minutes(MONITOR_END))
             if clipped_end <= clipped_start:
                 continue
-            raw_slots.append(
+            row_slots.append(
                 make_availability_slot(
-                    SUMIZEI_FACILITY_ID,
-                    SUMIZEI_FACILITY_NAME,
+                    facility_id,
+                    facility_name,
                     target.date.isoformat(),
                     court_name,
                     clipped_start,
@@ -1005,29 +1029,68 @@ def parse_sumizei_html(
                     reservation_url,
                 )
             )
+        availability_candidates.extend(merge_consecutive_slots(row_slots))
 
     if row_count == 0:
         raise ScrapeStructureError(
-            "unexpected_dom", "The SuMIzei schedule has no visible court rows"
+            "unexpected_dom", f"The {facility_name} schedule has no visible court rows"
         )
+    availability_by_id = {
+        slot["slot_id"]: slot
+        for slot in availability_candidates
+        if slot["duration_minutes"] >= MINIMUM_DURATION_MINUTES
+    }
     availability = [
         slot
-        for slot in merge_consecutive_slots(raw_slots)
-        if slot["duration_minutes"] >= MINIMUM_DURATION_MINUTES
+        for _, slot in sorted(
+            availability_by_id.items(),
+            key=lambda item: (
+                natural_sort_key(item[1]["court_name"]),
+                item[1]["start_time"],
+                item[1]["end_time"],
+            ),
+        )
     ]
     return success_result(target, checked_at, reservation_url, availability)
 
 
-def scrape_sumizei(
+def parse_sumizei_html(
+    html: str,
+    target: TargetDay,
+    reservation_url: str,
+    checked_at: str,
+) -> dict[str, Any]:
+    return parse_p_kashikan_html(
+        html,
+        target,
+        reservation_url,
+        checked_at,
+        SUMIZEI_FACILITY_ID,
+        SUMIZEI_FACILITY_NAME,
+        SUMIZEI_FACILITY_CODE,
+    )
+
+
+def scrape_p_kashikan(
     client: PageClient,
     facility: Facility,
     target: TargetDay,
 ) -> dict[str, Any]:
     reservation_url = facility.url_template
-    capture = client.capture_sumizei_schedule(
+    if not facility.p_kashikan_code:
+        return error_result(
+            target,
+            datetime.now(JST).isoformat(timespec="seconds"),
+            reservation_url,
+            "facility_not_found",
+            f"{facility.name} has no P-Kashikan facility code",
+        )
+    capture = client.capture_p_kashikan_schedule(
         reservation_url,
         target.date,
-        SNAPSHOT_ROOT / SUMIZEI_FACILITY_ID,
+        SNAPSHOT_ROOT / facility.id,
+        facility.p_kashikan_code,
+        facility.name,
     )
     if capture.error_type:
         return error_result(
@@ -1038,11 +1101,14 @@ def scrape_sumizei(
             capture.error_message or capture.error_type,
         )
     try:
-        return parse_sumizei_html(
+        return parse_p_kashikan_html(
             capture.html,
             target,
             reservation_url,
             capture.checked_at,
+            facility.id,
+            facility.name,
+            facility.p_kashikan_code,
         )
     except ScrapeStructureError as exc:
         return error_result(
@@ -1052,6 +1118,14 @@ def scrape_sumizei(
             exc.error_type,
             str(exc),
         )
+
+
+def scrape_sumizei(
+    client: PageClient,
+    facility: Facility,
+    target: TargetDay,
+) -> dict[str, Any]:
+    return scrape_p_kashikan(client, facility, target)
 
 
 def configured_facilities() -> tuple[Facility, ...]:
@@ -1067,10 +1141,20 @@ def configured_facilities() -> tuple[Facility, ...]:
         Facility(
             id=SUMIZEI_FACILITY_ID,
             name=SUMIZEI_FACILITY_NAME,
-            url_template=SUMIZEI_BASE_URL,
+            url_template=P_KASHIKAN_BASE_URL,
             selector_env="",
-            scraper=scrape_sumizei,
+            scraper=scrape_p_kashikan,
             requires_browser=True,
+            p_kashikan_code=SUMIZEI_FACILITY_CODE,
+        ),
+        Facility(
+            id=TOUKAI_FACILITY_ID,
+            name=TOUKAI_FACILITY_NAME,
+            url_template=P_KASHIKAN_BASE_URL,
+            selector_env="",
+            scraper=scrape_p_kashikan,
+            requires_browser=True,
+            p_kashikan_code=TOUKAI_FACILITY_CODE,
         ),
     )
 
@@ -1161,13 +1245,17 @@ class _NoopClientContext:
     def extract_texts(self, url: str, selector: str) -> list[str]:
         raise RuntimeError(f"Browser was not configured for {url} ({selector})")
 
-    def capture_sumizei_schedule(
+    def capture_p_kashikan_schedule(
         self,
         reservation_url: str,
         target_date: date,
         snapshot_directory: Path,
+        facility_code: str,
+        facility_name: str,
     ) -> PageCapture:
-        raise RuntimeError(f"Browser was not configured for {reservation_url}")
+        raise RuntimeError(
+            f"Browser was not configured for {facility_name} ({reservation_url})"
+        )
 
 
 def available_slot_keys(document: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -1457,8 +1545,9 @@ def comparable_document(document: dict[str, Any]) -> dict[str, Any]:
 
 def empty_notification_state() -> dict[str, Any]:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "initialized": False,
+        "initialized_facility_ids": [],
         "updated_at": None,
         "observed_slot_ids": [],
         "observed_slot_scopes": {},
@@ -1474,10 +1563,19 @@ def load_notification_state(
         if not isinstance(raw, dict):
             raise ValueError("state is not an object")
         initialized = raw.get("initialized")
+        initialized_facility_ids = raw.get("initialized_facility_ids")
         slot_ids = raw.get("observed_slot_ids")
         scopes = raw.get("observed_slot_scopes", {})
         if not isinstance(initialized, bool):
             raise ValueError("initialized is not boolean")
+        if initialized_facility_ids is not None and (
+            not isinstance(initialized_facility_ids, list)
+            or not all(
+                isinstance(facility_id, str)
+                for facility_id in initialized_facility_ids
+            )
+        ):
+            raise ValueError("initialized_facility_ids is invalid")
         if not isinstance(slot_ids, list) or not all(
             isinstance(slot_id, str) for slot_id in slot_ids
         ):
@@ -1488,8 +1586,13 @@ def load_notification_state(
         ):
             raise ValueError("observed_slot_scopes is invalid")
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "initialized": initialized,
+            "initialized_facility_ids": (
+                sorted(set(initialized_facility_ids))
+                if initialized_facility_ids is not None
+                else None
+            ),
             "updated_at": raw.get("updated_at"),
             "observed_slot_ids": sorted(set(slot_ids)),
             "observed_slot_scopes": {
@@ -1525,14 +1628,49 @@ def document_date_statuses(document: dict[str, Any]) -> dict[str, str]:
     return statuses
 
 
+def document_facility_ids(document: dict[str, Any]) -> set[str]:
+    return {
+        str(facility.get("id", ""))
+        for facility in document.get("facilities", [])
+        if facility.get("id")
+    }
+
+
+def successful_facility_ids(document: dict[str, Any]) -> set[str]:
+    return {
+        str(facility.get("id", ""))
+        for facility in document.get("facilities", [])
+        if facility.get("id")
+        and any(
+            date_entry.get("status") == "success"
+            for date_entry in facility.get("dates", [])
+        )
+    }
+
+
+def state_initialized_facility_ids(
+    state: dict[str, Any],
+    previous_availability: dict[str, Any],
+) -> set[str]:
+    configured = state.get("initialized_facility_ids")
+    if configured is not None:
+        return set(configured)
+    if state.get("initialized", False):
+        return document_facility_ids(previous_availability)
+    return set()
+
+
 @dataclass(frozen=True)
 class NotificationObservation:
     candidates: list[dict[str, Any]]
     suppressed_recovery_ids: set[str]
+    suppressed_initial_ids: set[str]
     target_ids: set[str]
     target_scopes: dict[str, str]
+    target_facility_ids: set[str]
     failure_ids: set[str]
     failure_scopes: dict[str, str]
+    failure_facility_ids: set[str]
 
 
 def observe_notification_changes(
@@ -1545,6 +1683,15 @@ def observe_notification_changes(
     current_slots = available_slot_keys(current_availability)
     current_statuses = document_date_statuses(current_availability)
     previous_statuses = document_date_statuses(previous_availability)
+    initialized_facility_ids = state_initialized_facility_ids(
+        state, previous_availability
+    )
+    target_facility_ids = (
+        initialized_facility_ids | successful_facility_ids(current_availability)
+    )
+    newly_initialized_facility_ids = (
+        target_facility_ids - initialized_facility_ids
+    )
 
     target_ids = set(current_slots)
     target_scopes = {
@@ -1562,26 +1709,33 @@ def observe_notification_changes(
 
     candidates: list[dict[str, Any]] = []
     suppressed_recovery_ids: set[str] = set()
+    suppressed_initial_ids: set[str] = set()
     for slot_id in sorted(set(current_slots) - previous_ids):
         slot = current_slots[slot_id]
         scope = slot_scope(slot)
+        if str(slot.get("facility_id", "")) in newly_initialized_facility_ids:
+            suppressed_initial_ids.add(slot_id)
+            continue
         previous_status = previous_statuses.get(scope)
         if previous_status and previous_status != "success":
             suppressed_recovery_ids.add(slot_id)
             continue
         candidates.append(slot)
 
-    failure_ids = previous_ids | suppressed_recovery_ids
+    failure_ids = previous_ids | suppressed_recovery_ids | suppressed_initial_ids
     failure_scopes = dict(previous_scopes)
-    for slot_id in suppressed_recovery_ids:
+    for slot_id in suppressed_recovery_ids | suppressed_initial_ids:
         failure_scopes[slot_id] = target_scopes[slot_id]
     return NotificationObservation(
         candidates=candidates,
         suppressed_recovery_ids=suppressed_recovery_ids,
+        suppressed_initial_ids=suppressed_initial_ids,
         target_ids=target_ids,
         target_scopes=target_scopes,
+        target_facility_ids=target_facility_ids,
         failure_ids=failure_ids,
         failure_scopes=failure_scopes,
+        failure_facility_ids=target_facility_ids,
     )
 
 
@@ -1592,6 +1746,7 @@ def updated_notification_state(
     status: str,
     checked_at: str,
     initialized: bool = True,
+    initialized_facility_ids: set[str] | None = None,
 ) -> dict[str, Any]:
     normalized_scopes = {
         slot_id: observed_scopes[slot_id]
@@ -1599,8 +1754,13 @@ def updated_notification_state(
         if slot_id in observed_scopes
     }
     candidate = {
-        "schema_version": 1,
+        "schema_version": 2,
         "initialized": initialized,
+        "initialized_facility_ids": sorted(
+            initialized_facility_ids
+            if initialized_facility_ids is not None
+            else set(previous.get("initialized_facility_ids") or [])
+        ),
         "updated_at": checked_at,
         "observed_slot_ids": sorted(observed_ids),
         "observed_slot_scopes": normalized_scopes,
@@ -1648,6 +1808,7 @@ def process_scrape_result(
             observation.target_scopes,
             "dry_run_preview",
             checked_at,
+            initialized_facility_ids=observation.target_facility_ids,
         )
         notification_status = "dry_run"
     elif options.test_notification:
@@ -1664,6 +1825,9 @@ def process_scrape_result(
             notification_status,
             checked_at,
             initialized=bool(state.get("initialized", False)),
+            initialized_facility_ids=state_initialized_facility_ids(
+                state, previous
+            ),
         )
     elif options.initialize_notification_baseline or not state.get("initialized", False):
         notification_status = "baseline_initialized"
@@ -1673,6 +1837,7 @@ def process_scrape_result(
             observation.target_scopes,
             notification_status,
             checked_at,
+            initialized_facility_ids=observation.target_facility_ids,
         )
     elif not options.send_notification:
         notification_status = "notification_suppressed_baseline_advanced"
@@ -1682,6 +1847,7 @@ def process_scrape_result(
             observation.target_scopes,
             notification_status,
             checked_at,
+            initialized_facility_ids=observation.target_facility_ids,
         )
     elif not observation.candidates:
         notification_status = "no_new_slots"
@@ -1691,6 +1857,7 @@ def process_scrape_result(
             observation.target_scopes,
             notification_status,
             checked_at,
+            initialized_facility_ids=observation.target_facility_ids,
         )
     else:
         line_result = send_line_notification_result(
@@ -1707,6 +1874,7 @@ def process_scrape_result(
                 observation.target_scopes,
                 notification_status,
                 checked_at,
+                initialized_facility_ids=observation.target_facility_ids,
             )
         else:
             notification_status = f"notification_{line_result.status}"
@@ -1716,6 +1884,7 @@ def process_scrape_result(
                 observation.failure_scopes,
                 notification_status,
                 checked_at,
+                initialized_facility_ids=observation.failure_facility_ids,
             )
             print(
                 f"::warning::LINE notification failed ({line_result.status}); "

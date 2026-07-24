@@ -170,6 +170,14 @@ def test_facility_and_total_availability_counts_are_correct(utils_page: Page) ->
                 "name": "施設B",
                 "dates": [make_date("2026-08-01", availability_count=1)],
             },
+            {
+                "id": "facility-c",
+                "name": "施設C",
+                "dates": [
+                    make_date("2026-08-01", availability_count=1),
+                    make_date("2026-08-02", availability_count=2),
+                ],
+            },
         ]
     }
     result = evaluate(
@@ -180,7 +188,7 @@ def test_facility_and_total_availability_counts_are_correct(utils_page: Page) ->
         data,
     )
 
-    assert result == {"facilities": [2, 1], "total": 3}
+    assert result == {"facilities": [2, 1, 3], "total": 6}
 
 
 @pytest.mark.parametrize(
@@ -339,10 +347,14 @@ def test_existing_json_renders_counts_status_dates_and_relative_data_path(page_l
         expected_facility_status_label(facility)
         for facility in AVAILABILITY["facilities"]
     ]
+    expected_facility_names = [
+        facility["name"] for facility in AVAILABILITY["facilities"]
+    ]
     date_titles = page.locator(".date-title h3").all_inner_texts()
 
     assert page.locator("#total-availability").inner_text() == expected_total_label
     assert page.locator("#facility-counts").inner_text() == expected_breakdown
+    assert page.locator(".facility-header h2").all_inner_texts() == expected_facility_names
     assert page.locator(".status-badge").all_inner_texts() == expected_status_labels
     assert page.locator(".availability-count").all_inner_texts() == expected_count_labels
     assert date_titles
