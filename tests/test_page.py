@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -134,15 +135,52 @@ def evaluate(utils_page: Page, expression: str, argument=None):
     return utils_page.evaluate(expression, argument)
 
 
-def test_facility_and_total_availability_counts_are_correct(utils_page: Page) -> None:
-    result = evaluate(
-        utils_page,
-        "data => ({ facility: AvailabilityPage.countAvailability(data.facilities[0]), "
-        "total: AvailabilityPage.summarizeAllFacilities(data).totalAvailability })",
-        AVAILABILITY,
+def expected_availability_count(facility: dict) -> int:
+    return sum(
+        len(date_entry.get("availability", []))
+        for date_entry in facility.get("dates", [])
     )
 
-    assert result == {"facility": 12, "total": 12}
+
+def expected_facility_status_label(facility: dict) -> str:
+    dates = facility.get("dates", [])
+    statuses = [date_entry.get("status") for date_entry in dates]
+    if "selector_pending" in statuses:
+        return "設定調整中"
+    if not statuses or all(status == "error" for status in statuses):
+        return "取得エラー"
+    if any(status != "success" for status in statuses):
+        return "一部取得エラー"
+    return "正常"
+
+
+def test_facility_and_total_availability_counts_are_correct(utils_page: Page) -> None:
+    data = {
+        "facilities": [
+            {
+                "id": "facility-a",
+                "name": "施設A",
+                "dates": [
+                    make_date("2026-08-01", availability_count=2),
+                    make_date("2026-08-02"),
+                ],
+            },
+            {
+                "id": "facility-b",
+                "name": "施設B",
+                "dates": [make_date("2026-08-01", availability_count=1)],
+            },
+        ]
+    }
+    result = evaluate(
+        utils_page,
+        "data => ({ facilities: data.facilities.map(facility => "
+        "AvailabilityPage.countAvailability(facility)), "
+        "total: AvailabilityPage.summarizeAllFacilities(data).totalAvailability })",
+        data,
+    )
+
+    assert result == {"facilities": [2, 1], "total": 3}
 
 
 @pytest.mark.parametrize(
@@ -279,12 +317,39 @@ def test_only_empty_success_dates_are_partitioned(utils_page: Page) -> None:
 
 def test_existing_json_renders_counts_status_dates_and_relative_data_path(page_loader) -> None:
     page, console_errors, page_errors, requests = page_loader()
+    expected_counts = [
+        expected_availability_count(facility)
+        for facility in AVAILABILITY["facilities"]
+    ]
+    expected_total = sum(expected_counts)
+    expected_total_label = (
+        f"合計{expected_total}件の空き候補"
+        if expected_total
+        else "現在、対象時間帯の空き候補はありません"
+    )
+    expected_breakdown = " / ".join(
+        f"{facility['name'].removesuffix('テニスコート')} {count}件"
+        for facility, count in zip(AVAILABILITY["facilities"], expected_counts)
+    )
+    expected_count_labels = [
+        f"空き候補 {count}件"
+        for count in expected_counts
+    ]
+    expected_status_labels = [
+        expected_facility_status_label(facility)
+        for facility in AVAILABILITY["facilities"]
+    ]
+    date_titles = page.locator(".date-title h3").all_inner_texts()
 
-    assert page.locator("#total-availability").inner_text() == "合計12件の空き候補"
-    assert page.locator("#facility-counts").inner_text() == "鴨池県営 12件 / SuMIzei 0件"
-    assert page.locator(".status-badge").all_inner_texts() == ["正常", "正常"]
-    assert page.locator(".availability-count").all_inner_texts() == ["空き候補 12件", "空き候補 0件"]
-    assert page.locator(".date-title h3").first.inner_text() == "8月1日（土）"
+    assert page.locator("#total-availability").inner_text() == expected_total_label
+    assert page.locator("#facility-counts").inner_text() == expected_breakdown
+    assert page.locator(".status-badge").all_inner_texts() == expected_status_labels
+    assert page.locator(".availability-count").all_inner_texts() == expected_count_labels
+    assert date_titles
+    assert all(
+        re.fullmatch(r"\d{1,2}月\d{1,2}日（.+）", title)
+        for title in date_titles
+    )
     assert "最終確認" in page.locator(".facility-summary").all_inner_texts()[0]
     assert page.locator("#freshness-warning").get_attribute("data-level") in {
         "fresh", "delayed", "stale"

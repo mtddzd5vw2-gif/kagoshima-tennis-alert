@@ -169,19 +169,20 @@ def test_initialized_false_only_initializes_without_notification(tmp_path: Path)
     assert opener.payloads == []
 
 
-def test_seeded_baseline_contains_existing_twelve_slots() -> None:
+def test_seeded_baseline_matches_current_slots() -> None:
     availability = scrape.load_document()
     state = scrape.load_notification_state()
+    current_ids = set(scrape.available_slot_keys(availability))
 
-    assert len(scrape.available_slot_keys(availability)) == 12
-    assert set(state["observed_slot_ids"]) == set(
-        scrape.available_slot_keys(availability)
-    )
+    assert current_ids
+    assert set(state["observed_slot_ids"]) == current_ids
 
 
-def test_first_baseline_does_not_notify_existing_twelve_slots(tmp_path: Path) -> None:
+def test_first_baseline_does_not_notify_current_slots(tmp_path: Path) -> None:
     current = scrape.load_document()
+    current_ids = set(scrape.available_slot_keys(current))
     opener = RecordingOpener()
+    assert current_ids
 
     result, _, state_path = run_process(
         tmp_path,
@@ -194,7 +195,7 @@ def test_first_baseline_does_not_notify_existing_twelve_slots(tmp_path: Path) ->
 
     saved = json.loads(state_path.read_text(encoding="utf-8"))
     assert result.notification_status == "baseline_initialized"
-    assert len(saved["observed_slot_ids"]) == 12
+    assert set(saved["observed_slot_ids"]) == current_ids
     assert opener.payloads == []
 
 
