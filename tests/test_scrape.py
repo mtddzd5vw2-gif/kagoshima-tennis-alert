@@ -4,6 +4,7 @@ from datetime import date
 from pathlib import Path
 
 import pytest
+from bs4 import BeautifulSoup
 
 from scripts import scrape
 
@@ -388,6 +389,90 @@ def test_sumizei_slot_id_is_stable() -> None:
         first["start_time"],
         first["end_time"],
     )
+
+
+@pytest.mark.parametrize(
+    ("encoded_time", "expected_start", "expected_end"),
+    [
+        ("10591159", "11:00", "12:00"),
+        ("11591259", "12:00", "13:00"),
+        ("08290859", "08:30", "09:00"),
+        ("09001000", "09:00", "10:00"),
+        ("08300930", "08:30", "09:30"),
+    ],
+)
+def test_p_kashikan_internal_times_match_displayed_boundaries(
+    encoded_time: str,
+    expected_start: str,
+    expected_end: str,
+) -> None:
+    element = BeautifulSoup(
+        "<td onmousedown=\"setAppStatus("
+        f"'029|001|01', '2026/08/01', 0, '{encoded_time}', '', '');"
+        '\">○</td>',
+        "html.parser",
+    ).td
+
+    start, end = scrape._p_kashikan_cell_minutes(
+        element,
+        scrape.clock_to_minutes("08:00"),
+        scrape.clock_to_minutes("09:00"),
+        TARGET,
+        scrape.SUMIZEI_FACILITY_CODE,
+        scrape.SUMIZEI_FACILITY_NAME,
+    )
+
+    assert scrape.minutes_to_clock(start) == expected_start
+    assert scrape.minutes_to_clock(end) == expected_end
+
+
+def test_p_kashikan_inferred_times_match_displayed_boundaries() -> None:
+    element = BeautifulSoup("<td>●</td>", "html.parser").td
+
+    start, end = scrape._p_kashikan_cell_minutes(
+        element,
+        scrape.clock_to_minutes("10:59"),
+        scrape.clock_to_minutes("11:59"),
+        TARGET,
+        scrape.SUMIZEI_FACILITY_CODE,
+        scrape.SUMIZEI_FACILITY_NAME,
+    )
+
+    assert scrape.minutes_to_clock(start) == "11:00"
+    assert scrape.minutes_to_clock(end) == "12:00"
+
+
+def test_p_kashikan_merges_slots_after_boundary_normalization() -> None:
+    html = toukai_fixture_html()
+    html = html.replace("'11001200'", "'10591159'", 1)
+    html = html.replace("'12001300'", "'11591259'", 1)
+
+    availability = parsed_toukai_result(html)["availability"]
+
+    assert any(
+        slot["court_name"] == "Aコート(ナイターあり)"
+        and slot["start_time"] == "11:00"
+        and slot["end_time"] == "13:00"
+        and slot["duration_minutes"] == 120
+        for slot in availability
+    )
+    assert all(
+        ":59" not in slot["start_time"] and ":59" not in slot["end_time"]
+        for slot in availability
+    )
+
+
+def test_p_kashikan_boundary_normalization_does_not_change_kamoike() -> None:
+    availability = parsed_result()["availability"]
+
+    assert {
+        (slot["court_name"], slot["start_time"], slot["end_time"])
+        for slot in availability
+    } == {
+        ("コートA", "08:00", "10:00"),
+        ("コートA", "12:00", "13:00"),
+        ("コートB", "09:00", "11:00"),
+    }
 
 
 def test_toukai_extracts_multiple_courts_and_boundary_slots() -> None:

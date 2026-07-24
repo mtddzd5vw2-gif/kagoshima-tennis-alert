@@ -847,6 +847,11 @@ def _pixel_width(element: Tag) -> float:
     return float(match.group(1))
 
 
+def _normalize_p_kashikan_boundary(minutes: int) -> int:
+    """Convert P-Kashikan's inclusive :29/:59 values to displayed boundaries."""
+    return minutes + 1 if minutes % 60 in {29, 59} else minutes
+
+
 def _p_kashikan_cell_minutes(
     element: Tag,
     inferred_start: int,
@@ -857,7 +862,10 @@ def _p_kashikan_cell_minutes(
 ) -> tuple[int, int]:
     handler = element.get("onmousedown", "")
     if not handler:
-        return inferred_start, inferred_end
+        return (
+            _normalize_p_kashikan_boundary(inferred_start),
+            _normalize_p_kashikan_boundary(inferred_end),
+        )
     match = P_KASHIKAN_SLOT_PATTERN.search(handler)
     if not match:
         raise ScrapeStructureError(
@@ -875,8 +883,12 @@ def _p_kashikan_cell_minutes(
             f"Expected {expected_date}, got {match.group('date')}",
         )
     time_range = match.group("times")
-    start = clock_to_minutes(f"{time_range[0:2]}:{time_range[2:4]}")
-    end = clock_to_minutes(f"{time_range[4:6]}:{time_range[6:8]}")
+    start = _normalize_p_kashikan_boundary(
+        clock_to_minutes(f"{time_range[0:2]}:{time_range[2:4]}")
+    )
+    end = _normalize_p_kashikan_boundary(
+        clock_to_minutes(f"{time_range[4:6]}:{time_range[6:8]}")
+    )
     if end <= start:
         raise ScrapeStructureError(
             "unexpected_dom",
@@ -1660,6 +1672,65 @@ def state_initialized_facility_ids(
     return set()
 
 
+def _p_kashikan_slot_time_migration_matches(
+    previous_slot: dict[str, Any],
+    current_slot: dict[str, Any],
+) -> bool:
+    facility_id = str(previous_slot.get("facility_id", ""))
+    if facility_id not in {SUMIZEI_FACILITY_ID, TOUKAI_FACILITY_ID}:
+        return False
+    if any(
+        str(previous_slot.get(field, "")) != str(current_slot.get(field, ""))
+        for field in ("facility_id", "date", "court_name")
+    ):
+        return False
+    try:
+        previous_start = clock_to_minutes(str(previous_slot.get("start_time", "")))
+        previous_end = clock_to_minutes(str(previous_slot.get("end_time", "")))
+        current_start = clock_to_minutes(str(current_slot.get("start_time", "")))
+        current_end = clock_to_minutes(str(current_slot.get("end_time", "")))
+    except (TypeError, ValueError, OverflowError):
+        return False
+    return (
+        (previous_start, previous_end) != (current_start, current_end)
+        and _normalize_p_kashikan_boundary(previous_start) == current_start
+        and _normalize_p_kashikan_boundary(previous_end) == current_end
+    )
+
+
+def migrate_p_kashikan_observed_ids(
+    observed_ids: set[str],
+    observed_scopes: dict[str, str],
+    previous_availability: dict[str, Any],
+    current_availability: dict[str, Any],
+) -> tuple[set[str], dict[str, str]]:
+    """Move observed IDs to corrected P-Kashikan times without notifying again."""
+    previous_slots = available_slot_keys(previous_availability)
+    current_slots = available_slot_keys(current_availability)
+    migrated_ids = set(observed_ids)
+    migrated_scopes = dict(observed_scopes)
+    claimed_current_ids: set[str] = set()
+
+    for previous_id in sorted(observed_ids):
+        previous_slot = previous_slots.get(previous_id)
+        if previous_slot is None:
+            continue
+        for current_id, current_slot in sorted(current_slots.items()):
+            if current_id in claimed_current_ids:
+                continue
+            if not _p_kashikan_slot_time_migration_matches(
+                previous_slot, current_slot
+            ):
+                continue
+            migrated_ids.remove(previous_id)
+            migrated_ids.add(current_id)
+            scope = migrated_scopes.pop(previous_id, slot_scope(previous_slot))
+            migrated_scopes[current_id] = scope
+            claimed_current_ids.add(current_id)
+            break
+    return migrated_ids, migrated_scopes
+
+
 @dataclass(frozen=True)
 class NotificationObservation:
     candidates: list[dict[str, Any]]
@@ -1680,6 +1751,12 @@ def observe_notification_changes(
 ) -> NotificationObservation:
     previous_ids = set(state.get("observed_slot_ids", []))
     previous_scopes = dict(state.get("observed_slot_scopes", {}))
+    previous_ids, previous_scopes = migrate_p_kashikan_observed_ids(
+        previous_ids,
+        previous_scopes,
+        previous_availability,
+        current_availability,
+    )
     current_slots = available_slot_keys(current_availability)
     current_statuses = document_date_statuses(current_availability)
     previous_statuses = document_date_statuses(previous_availability)
