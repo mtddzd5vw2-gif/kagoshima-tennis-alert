@@ -357,6 +357,10 @@ def test_existing_json_renders_counts_status_dates_and_relative_data_path(page_l
     assert page.locator(".facility-header h2").all_inner_texts() == expected_facility_names
     assert page.locator(".status-badge").all_inner_texts() == expected_status_labels
     assert page.locator(".availability-count").all_inner_texts() == expected_count_labels
+    assert all(
+        ":59" not in time_label
+        for time_label in page.locator(".slot strong").all_inner_texts()
+    )
     assert date_titles
     assert all(
         re.fullmatch(r"\d{1,2}月\d{1,2}日（.+）", title)
@@ -367,6 +371,53 @@ def test_existing_json_renders_counts_status_dates_and_relative_data_path(page_l
         "fresh", "delayed", "stale"
     }
     assert requests and "project/data/availability.json?t=" in requests[0]
+    assert console_errors == []
+    assert page_errors == []
+
+
+def test_p_kashikan_facilities_render_official_boundary_times(page_loader) -> None:
+    sumizei_date = make_date("2026-08-01")
+    sumizei_date["availability"] = [
+        {
+            **make_slot(1),
+            "court_name": "テニスコート2",
+            "start_time": "11:00",
+            "end_time": "12:00",
+        }
+    ]
+    toukai_date = make_date("2026-08-01")
+    toukai_date["availability"] = [
+        {
+            **make_slot(2),
+            "court_name": "C・Dコート(ナイターあり)",
+            "start_time": "12:00",
+            "end_time": "13:00",
+        }
+    ]
+    data = {
+        "generated_at": datetime.now(JST).isoformat(),
+        "window": {"start": "08:00", "end": "13:00", "timezone": "Asia/Tokyo"},
+        "facilities": [
+            {
+                "id": "sumizei",
+                "name": "SuMIzeiテニスコート",
+                "dates": [sumizei_date],
+            },
+            {
+                "id": "toukai-tennis",
+                "name": "東開庭球場",
+                "dates": [toukai_date],
+            },
+        ],
+    }
+
+    page, console_errors, page_errors, _ = page_loader(data)
+
+    assert page.locator(".slot strong").all_inner_texts() == [
+        "11:00〜12:00",
+        "12:00〜13:00",
+    ]
+    assert ":59" not in page.locator("#content").inner_text()
     assert console_errors == []
     assert page_errors == []
 

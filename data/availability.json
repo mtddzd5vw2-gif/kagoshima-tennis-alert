@@ -176,12 +176,12 @@
               "facility_name": "SuMIzeiテニスコート",
               "date": "2026-07-25",
               "court_name": "テニスコート2",
-              "start_time": "11:59",
-              "end_time": "12:59",
+              "start_time": "12:00",
+              "end_time": "13:00",
               "duration_minutes": 60,
               "status": "available",
               "reservation_url": "https://k2.p-kashikan.jp/kagoshima-city/index.php",
-              "slot_id": "b08f658895b925d8fb2f419f"
+              "slot_id": "22454c5882f8cf8fae88a084"
             }
           ]
         },
@@ -264,36 +264,36 @@
               "facility_name": "東開庭球場",
               "date": "2026-07-25",
               "court_name": "C・Dコート(ナイターあり)",
-              "start_time": "09:59",
-              "end_time": "12:59",
+              "start_time": "10:00",
+              "end_time": "13:00",
               "duration_minutes": 180,
               "status": "available",
               "reservation_url": "https://k2.p-kashikan.jp/kagoshima-city/index.php",
-              "slot_id": "e26dbbed257262914823e514"
+              "slot_id": "9cfcd80caa76d5be3e660362"
             },
             {
               "facility_id": "toukai-tennis",
               "facility_name": "東開庭球場",
               "date": "2026-07-25",
               "court_name": "C・Dコート(ナイターあり)",
-              "start_time": "10:59",
-              "end_time": "11:59",
+              "start_time": "11:00",
+              "end_time": "12:00",
               "duration_minutes": 60,
               "status": "available",
               "reservation_url": "https://k2.p-kashikan.jp/kagoshima-city/index.php",
-              "slot_id": "369dc661d56385f53ee297d8"
+              "slot_id": "66281022d6f7d8446e6345ce"
             },
             {
               "facility_id": "toukai-tennis",
               "facility_name": "東開庭球場",
               "date": "2026-07-25",
               "court_name": "C・Dコート(ナイターあり)",
-              "start_time": "11:59",
-              "end_time": "12:59",
+              "start_time": "12:00",
+              "end_time": "13:00",
               "duration_minutes": 60,
               "status": "available",
               "reservation_url": "https://k2.p-kashikan.jp/kagoshima-city/index.php",
-              "slot_id": "2634ed6c68bd7fb286266861"
+              "slot_id": "74bbddddd4ba8781ccf5833c"
             }
           ]
         },

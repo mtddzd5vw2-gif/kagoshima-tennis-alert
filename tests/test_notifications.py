@@ -224,6 +224,101 @@ def test_new_slot_id_only_is_candidate() -> None:
     assert [slot["slot_id"] for slot in observation.candidates] == ["slot-new"]
 
 
+def test_p_kashikan_corrected_ids_migrate_without_duplicate_notifications(
+    tmp_path: Path,
+) -> None:
+    definitions = [
+        (
+            "sumizei",
+            "SuMIzeiテニスコート",
+            "テニスコート2",
+            "10:59",
+            "11:59",
+            "11:00",
+            "12:00",
+        ),
+        (
+            "toukai-tennis",
+            "東開庭球場",
+            "C・Dコート(ナイターあり)",
+            "11:59",
+            "12:59",
+            "12:00",
+            "13:00",
+        ),
+    ]
+    previous_slots = []
+    current_slots = []
+    for (
+        facility_id,
+        facility_name,
+        court_name,
+        old_start,
+        old_end,
+        new_start,
+        new_end,
+    ) in definitions:
+        previous_slots.append(
+            make_slot(
+                scrape.make_slot_id(
+                    facility_id, TARGET_DATE, court_name, old_start, old_end
+                ),
+                facility_id=facility_id,
+                facility_name=facility_name,
+                court_name=court_name,
+                start_time=old_start,
+                end_time=old_end,
+            )
+        )
+        current_slots.append(
+            make_slot(
+                scrape.make_slot_id(
+                    facility_id, TARGET_DATE, court_name, new_start, new_end
+                ),
+                facility_id=facility_id,
+                facility_name=facility_name,
+                court_name=court_name,
+                start_time=new_start,
+                end_time=new_end,
+            )
+        )
+    kamoike = make_slot("kamoike-existing")
+    previous_slots.append(kamoike)
+    current_slots.append(kamoike)
+    statuses = {
+        "kamoike-prefectural": "success",
+        "sumizei": "success",
+        "toukai-tennis": "success",
+    }
+    state = make_state(
+        [slot["slot_id"] for slot in previous_slots],
+        initialized_facility_ids=list(statuses),
+    )
+    state["observed_slot_scopes"] = {
+        slot["slot_id"]: f"{slot['facility_id']}|{TARGET_DATE}"
+        for slot in previous_slots
+    }
+    opener = RecordingOpener()
+
+    result, _, state_path = run_process(
+        tmp_path,
+        make_document(previous_slots, statuses),
+        make_document(current_slots, statuses),
+        state,
+        scrape.RunOptions(send_notification=True),
+        opener,
+    )
+
+    saved = json.loads(state_path.read_text(encoding="utf-8"))
+    assert result.notification_status == "no_new_slots"
+    assert result.notification_candidates == 0
+    assert set(saved["observed_slot_ids"]) == {
+        slot["slot_id"] for slot in current_slots
+    }
+    assert "kamoike-existing" in saved["observed_slot_ids"]
+    assert opener.payloads == []
+
+
 def test_toukai_first_observation_is_baselined_without_notification(
     tmp_path: Path,
 ) -> None:
@@ -561,6 +656,33 @@ def test_line_groups_toukai_slots_for_the_same_date_in_one_message() -> None:
     assert messages[0].count("東開庭球場") == 1
     assert "Aコート(ナイターあり)" in messages[0]
     assert "Bコート(ナイターなし)" in messages[0]
+
+
+def test_p_kashikan_line_messages_use_official_display_times() -> None:
+    sumizei = make_slot(
+        "sumizei-corrected",
+        facility_id="sumizei",
+        facility_name="SuMIzeiテニスコート",
+        court_name="テニスコート2",
+        start_time="11:00",
+        end_time="12:00",
+    )
+    toukai = make_slot(
+        "toukai-corrected",
+        facility_id="toukai-tennis",
+        facility_name="東開庭球場",
+        court_name="C・Dコート(ナイターあり)",
+        start_time="12:00",
+        end_time="13:00",
+    )
+
+    message = "\n".join(scrape.build_line_messages([sumizei, toukai]))
+
+    assert "SuMIzeiテニスコート" in message
+    assert "11:00〜12:00" in message
+    assert "東開庭球場" in message
+    assert "12:00〜13:00" in message
+    assert ":59" not in message
 
 
 def test_long_notifications_split_without_truncation() -> None:
