@@ -6,11 +6,10 @@
     "sumizei",
     "toukai-tennis"
   ],
-  "updated_at": "2026-07-24T21:38:20+09:00",
+  "updated_at": "2026-07-24T22:08:31+09:00",
   "observed_slot_ids": [
     "15b45d4e78760311645c96b9",
     "22454c5882f8cf8fae88a084",
-    "43aadeef67b318225c82b92f",
     "56fce5d872e1b0c44b493d89",
     "605b4624da85d943d31bacda",
     "66281022d6f7d8446e6345ce",
@@ -18,13 +17,11 @@
     "74bbddddd4ba8781ccf5833c",
     "9b025e41172ff82c25c291d4",
     "b1fde79a1868918c1621ad01",
-    "e8ef4e0f90807b57938ff3a9",
-    "eca2a1a13a5c748bd3d4ae58"
+    "e8ef4e0f90807b57938ff3a9"
   ],
   "observed_slot_scopes": {
     "15b45d4e78760311645c96b9": "kamoike-prefectural|2026-08-01",
     "22454c5882f8cf8fae88a084": "sumizei|2026-07-25",
-    "43aadeef67b318225c82b92f": "sumizei|2026-07-26",
     "56fce5d872e1b0c44b493d89": "kamoike-prefectural|2026-08-01",
     "605b4624da85d943d31bacda": "kamoike-prefectural|2026-08-01",
     "66281022d6f7d8446e6345ce": "toukai-tennis|2026-07-25",
@@ -32,8 +29,7 @@
     "74bbddddd4ba8781ccf5833c": "toukai-tennis|2026-07-25",
     "9b025e41172ff82c25c291d4": "kamoike-prefectural|2026-08-01",
     "b1fde79a1868918c1621ad01": "kamoike-prefectural|2026-08-02",
-    "e8ef4e0f90807b57938ff3a9": "kamoike-prefectural|2026-08-01",
-    "eca2a1a13a5c748bd3d4ae58": "sumizei|2026-07-26"
+    "e8ef4e0f90807b57938ff3a9": "kamoike-prefectural|2026-08-01"
   },
   "last_notification_status": "no_new_slots"
 }
