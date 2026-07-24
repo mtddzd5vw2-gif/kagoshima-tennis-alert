@@ -10,9 +10,11 @@ from scripts import scrape
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "kamoike_schedule.html"
 SUMIZEI_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "sumizei_schedule.html"
+TOUKAI_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "toukai_schedule.html"
 TARGET = scrape.TargetDay(date(2026, 8, 1), "weekend", None)
 RESERVATION_URL = scrape.KAMOIKE_URL_TEMPLATE.format(date="2026-08-01")
 SUMIZEI_RESERVATION_URL = scrape.SUMIZEI_BASE_URL
+TOUKAI_RESERVATION_URL = scrape.P_KASHIKAN_BASE_URL
 CHECKED_AT = "2026-07-21T12:00:00+09:00"
 
 
@@ -39,6 +41,22 @@ def parsed_sumizei_result(html: str | None = None) -> dict:
         TARGET,
         SUMIZEI_RESERVATION_URL,
         CHECKED_AT,
+    )
+
+
+def toukai_fixture_html() -> str:
+    return TOUKAI_FIXTURE_PATH.read_text(encoding="utf-8")
+
+
+def parsed_toukai_result(html: str | None = None) -> dict:
+    return scrape.parse_p_kashikan_html(
+        html or toukai_fixture_html(),
+        TARGET,
+        TOUKAI_RESERVATION_URL,
+        CHECKED_AT,
+        scrape.TOUKAI_FACILITY_ID,
+        scrape.TOUKAI_FACILITY_NAME,
+        scrape.TOUKAI_FACILITY_CODE,
     )
 
 
@@ -372,10 +390,70 @@ def test_sumizei_slot_id_is_stable() -> None:
     )
 
 
-def test_build_document_integrates_kamoike_and_sumizei() -> None:
+def test_toukai_extracts_multiple_courts_and_boundary_slots() -> None:
+    availability = parsed_toukai_result()["availability"]
+    courts = {slot["court_name"] for slot in availability}
+
+    assert courts == {
+        "Aコート(ナイターあり)",
+        "Bコート(ナイターなし)",
+        "C・Dコート(ナイターあり)",
+    }
+    assert any(
+        slot["court_name"] == "Aコート(ナイターあり)"
+        and slot["start_time"] == "08:30"
+        and slot["end_time"] == "10:00"
+        for slot in availability
+    )
+    assert any(
+        slot["court_name"] == "Aコート(ナイターあり)"
+        and slot["start_time"] == "11:00"
+        and slot["end_time"] == "13:00"
+        for slot in availability
+    )
+
+
+def test_toukai_excludes_a_standalone_thirty_minute_slot() -> None:
+    availability = parsed_toukai_result()["availability"]
+
+    assert not any(
+        slot["court_name"] == "Bコート(ナイターなし)"
+        and slot["start_time"] == "08:30"
+        for slot in availability
+    )
+    assert all(slot["duration_minutes"] >= 60 for slot in availability)
+
+
+def test_toukai_does_not_merge_different_resource_rows() -> None:
+    availability = [
+        slot
+        for slot in parsed_toukai_result()["availability"]
+        if slot["court_name"] == "C・Dコート(ナイターあり)"
+    ]
+
+    assert any(slot["start_time"] == "11:00" and slot["end_time"] == "12:00" for slot in availability)
+    assert any(slot["start_time"] == "12:00" and slot["end_time"] == "13:00" for slot in availability)
+    assert not any(slot["start_time"] == "11:00" and slot["end_time"] == "13:00" for slot in availability)
+
+
+def test_configured_facilities_include_both_p_kashikan_facilities() -> None:
+    facilities = {facility.id: facility for facility in scrape.configured_facilities()}
+
+    assert set(facilities) == {
+        "kamoike-prefectural",
+        "sumizei",
+        "toukai-tennis",
+    }
+    assert facilities["sumizei"].p_kashikan_code == "029"
+    assert facilities["toukai-tennis"].name == "東開庭球場"
+    assert facilities["toukai-tennis"].p_kashikan_code == "131"
+
+
+def test_build_document_integrates_all_three_facilities() -> None:
     client = FakePageClient(
         PageCaptureFactory.success(fixture_html()),
         PageCaptureFactory.success(sumizei_fixture_html()),
+        PageCaptureFactory.success(toukai_fixture_html()),
     )
 
     document = scrape.build_document(
@@ -385,10 +463,16 @@ def test_build_document_integrates_kamoike_and_sumizei() -> None:
     )
 
     facilities = {facility["id"]: facility for facility in document["facilities"]}
-    assert set(facilities) == {"kamoike-prefectural", "sumizei"}
+    assert set(facilities) == {
+        "kamoike-prefectural",
+        "sumizei",
+        "toukai-tennis",
+    }
     assert facilities["kamoike-prefectural"]["dates"][0]["status"] == "success"
     assert facilities["sumizei"]["dates"][0]["status"] == "success"
     assert len(facilities["sumizei"]["dates"][0]["availability"]) == 3
+    assert facilities["toukai-tennis"]["dates"][0]["status"] == "success"
+    assert facilities["toukai-tennis"]["dates"][0]["availability"]
 
 
 def test_one_facility_failure_preserves_other_facility_result() -> None:
@@ -402,6 +486,7 @@ def test_one_facility_failure_preserves_other_facility_result() -> None:
     client = FakePageClient(
         PageCaptureFactory.success(fixture_html()),
         sumizei_error,
+        PageCaptureFactory.success(toukai_fixture_html()),
     )
 
     document = scrape.build_document(
@@ -414,6 +499,37 @@ def test_one_facility_failure_preserves_other_facility_result() -> None:
     assert facilities["kamoike-prefectural"]["dates"][0]["status"] == "success"
     assert len(facilities["kamoike-prefectural"]["dates"][0]["availability"]) == 3
     assert facilities["sumizei"]["dates"][0]["status"] == "error"
+    assert facilities["toukai-tennis"]["dates"][0]["status"] == "success"
+
+
+def test_toukai_failure_does_not_stop_existing_facilities() -> None:
+    toukai_error = scrape.PageCapture(
+        html="<html></html>",
+        checked_at=CHECKED_AT,
+        response_status=None,
+        error_type="facility_not_found",
+        error_message="facility code 131 was not found",
+    )
+    client = FakePageClient(
+        PageCaptureFactory.success(fixture_html()),
+        PageCaptureFactory.success(sumizei_fixture_html()),
+        toukai_error,
+    )
+
+    document = scrape.build_document(
+        [TARGET],
+        facilities=scrape.configured_facilities(),
+        client_factory=lambda: client,
+    )
+
+    facilities = {facility["id"]: facility for facility in document["facilities"]}
+    assert facilities["kamoike-prefectural"]["dates"][0]["status"] == "success"
+    assert facilities["sumizei"]["dates"][0]["status"] == "success"
+    assert facilities["toukai-tennis"]["dates"][0]["status"] == "error"
+    assert (
+        facilities["toukai-tennis"]["dates"][0]["error_type"]
+        == "facility_not_found"
+    )
 
 
 def test_diff_notifies_new_slots_but_not_error_recovery() -> None:
@@ -468,9 +584,11 @@ class FakePageClient:
         self,
         capture: scrape.PageCapture,
         sumizei_capture: scrape.PageCapture | None = None,
+        toukai_capture: scrape.PageCapture | None = None,
     ) -> None:
         self.capture = capture
         self.sumizei_capture = sumizei_capture or capture
+        self.toukai_capture = toukai_capture or capture
         self.snapshot_directory: Path | None = None
         self.snapshot_name = ""
 
@@ -493,12 +611,18 @@ class FakePageClient:
     def extract_texts(self, url: str, selector: str) -> list[str]:
         return []
 
-    def capture_sumizei_schedule(
+    def capture_p_kashikan_schedule(
         self,
         reservation_url: str,
         target_date: date,
         snapshot_directory: Path,
+        facility_code: str,
+        facility_name: str,
     ) -> scrape.PageCapture:
         self.snapshot_directory = snapshot_directory
         self.snapshot_name = target_date.isoformat()
-        return self.sumizei_capture
+        if facility_code == scrape.SUMIZEI_FACILITY_CODE:
+            return self.sumizei_capture
+        if facility_code == scrape.TOUKAI_FACILITY_CODE:
+            return self.toukai_capture
+        raise AssertionError(f"Unexpected P-Kashikan facility: {facility_name}")
