@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "initialized": true,
-  "updated_at": "2026-07-24T09:08:45+09:00",
+  "updated_at": "2026-07-24T09:38:12+09:00",
   "observed_slot_ids": [
     "15b45d4e78760311645c96b9",
     "22454c5882f8cf8fae88a084",
@@ -40,5 +40,5 @@
     "eca2a1a13a5c748bd3d4ae58": "sumizei|2026-07-26",
     "f00f52b656b9e3163d99802b": "sumizei|2026-07-26"
   },
-  "last_notification_status": "notification_succeeded"
+  "last_notification_status": "no_new_slots"
 }
