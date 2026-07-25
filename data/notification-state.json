@@ -6,11 +6,12 @@
     "sumizei",
     "toukai-tennis"
   ],
-  "updated_at": "2026-07-25T09:38:30+09:00",
+  "updated_at": "2026-07-25T10:08:35+09:00",
   "observed_slot_ids": [
     "15b45d4e78760311645c96b9",
     "1621b5fd00b9be1a42bbc10f",
     "2ae3f0bf65828b6c638be9c0",
+    "3b8eafcdb00a03003cdbfcb2",
     "515bfca91cb6570e039231c3",
     "56fce5d872e1b0c44b493d89",
     "57f0ab8ac8a0dca4ac7b9a7c",
@@ -23,7 +24,6 @@
     "74bbddddd4ba8781ccf5833c",
     "8582d94d8d12f3ab881ca37b",
     "86300193f648a529ec841c62",
-    "8834965d61835449aa0d1243",
     "8a9deca5df384e24f45058d1",
     "9b025e41172ff82c25c291d4",
     "a4095ec885f4b5752a024d3b",
@@ -32,9 +32,9 @@
     "b1fde79a1868918c1621ad01",
     "c15e83ec15e9892e2fc84280",
     "cdfc71d2d2b81f0ab54c3cca",
-    "e8a4f43ad6c8e01909f40f9d",
     "e8ef4e0f90807b57938ff3a9",
     "eca2a1a13a5c748bd3d4ae58",
+    "f00f52b656b9e3163d99802b",
     "f6b096f7452c2de7ec450f0e",
     "fb2f0bc455bc9e75beb8d1f7"
   ],
@@ -42,6 +42,7 @@
     "15b45d4e78760311645c96b9": "kamoike-prefectural|2026-08-01",
     "1621b5fd00b9be1a42bbc10f": "kamoike-prefectural|2026-08-08",
     "2ae3f0bf65828b6c638be9c0": "kamoike-prefectural|2026-08-08",
+    "3b8eafcdb00a03003cdbfcb2": "sumizei|2026-07-25",
     "515bfca91cb6570e039231c3": "kamoike-prefectural|2026-08-08",
     "56fce5d872e1b0c44b493d89": "kamoike-prefectural|2026-08-01",
     "57f0ab8ac8a0dca4ac7b9a7c": "kamoike-prefectural|2026-08-08",
@@ -54,7 +55,6 @@
     "74bbddddd4ba8781ccf5833c": "toukai-tennis|2026-07-25",
     "8582d94d8d12f3ab881ca37b": "kamoike-prefectural|2026-08-08",
     "86300193f648a529ec841c62": "kamoike-prefectural|2026-08-08",
-    "8834965d61835449aa0d1243": "sumizei|2026-07-25",
     "8a9deca5df384e24f45058d1": "kamoike-prefectural|2026-08-08",
     "9b025e41172ff82c25c291d4": "kamoike-prefectural|2026-08-01",
     "a4095ec885f4b5752a024d3b": "kamoike-prefectural|2026-08-08",
@@ -63,11 +63,11 @@
     "b1fde79a1868918c1621ad01": "kamoike-prefectural|2026-08-02",
     "c15e83ec15e9892e2fc84280": "kamoike-prefectural|2026-08-08",
     "cdfc71d2d2b81f0ab54c3cca": "kamoike-prefectural|2026-08-08",
-    "e8a4f43ad6c8e01909f40f9d": "sumizei|2026-07-25",
     "e8ef4e0f90807b57938ff3a9": "kamoike-prefectural|2026-08-01",
     "eca2a1a13a5c748bd3d4ae58": "sumizei|2026-07-26",
+    "f00f52b656b9e3163d99802b": "sumizei|2026-07-26",
     "f6b096f7452c2de7ec450f0e": "kamoike-prefectural|2026-08-08",
     "fb2f0bc455bc9e75beb8d1f7": "kamoike-prefectural|2026-08-08"
   },
-  "last_notification_status": "no_new_slots"
+  "last_notification_status": "notification_succeeded"
 }
