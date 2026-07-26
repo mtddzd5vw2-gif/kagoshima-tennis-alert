@@ -133,7 +133,7 @@ P-Kashikanでは公式画面の時刻境界が内部値やセル幅計算上 `:2
 - `error`: 取得またはDOM解析に失敗。`error_type` と `error_message` を保持
 - `selector_pending`: 旧データとの互換用。現在の3施設では生成しない
 
-エラー時も `checked_at`、`reservation_url`、空の `availability` を保存します。主な `error_type` は `navigation_timeout`、`navigation_error`、`access_denied`、`facility_not_found`、`date_selection_failed`、`no_schedule_table`、`unexpected_dom` です。
+エラー時も `checked_at` と `reservation_url` を保存します。通常は空の `availability` を保存しますが、P-KashikanがHTTP 403を返した場合は、直前の正常取得データがあれば `status: error` のまま `availability` を保持し、`fallback_from_previous: true` と `last_success_checked_at` を記録します。画面上では取得エラーとして扱い、保持した枠を現在の空き件数には加えません。主な `error_type` は `navigation_timeout`、`navigation_error`、`access_denied`、`facility_not_found`、`date_selection_failed`、`no_schedule_table`、`unexpected_dom` です。
 
 ## notification-state.json
 
@@ -180,7 +180,15 @@ python scripts/scrape.py
 
 鴨池県営には追加のセレクタ設定は不要です。固定パラメータとして `category_id=483`、`area_id=289` を使用し、対象日ごとに `date=YYYY-MM-DD` を付加します。
 
-SuMIzeiと東開は共通のP-Kashikan処理を使用します。公開トップURLと日別表示 `disp_span=0` は共通で、施設設定のコード（`029` / `131`）、施設名、対象日だけを変更します。
+SuMIzeiと東開は共通のP-Kashikan処理を使用します。公開トップURLと日別表示 `disp_span=0` は共通で、施設設定のコード（`029` / `131`）、施設名、対象日だけを変更します。P-Kashikanに限り、`ja-JP`、`Asia/Tokyo`、Desktop ChromeのUser-Agent、`Accept-Language`、1440×1000 viewport、JavaScript有効の通常ブラウザ設定を使用し、同一実行内ではブラウザセッションを再利用します。`navigator.webdriver`を隠すなどのアクセス制限回避は行いません。
+
+P-KashikanがHTTP 403を返した場合は、その実行内の残りのP-Kashikanアクセスを中止します。SuMIzeiまたは東開の直前の正常データと通知基準は保持し、鴨池県営の取得は継続します。
+
+### P-Kashikan診断情報
+
+各P-Kashikanナビゲーションでは、HTML・PNGに加えて `*-diagnostics.json` を `snapshots/<facility-id>/` に保存します。診断JSONとActionsログには、実行環境、最終URL、HTTPステータス、ページタイトル、response/request headers、User-Agent、`navigator.webdriver`、Cookie名、本文中のアクセス制限関連マーカーを記録します。
+
+Cookie値、Authorization、APIキー、token・secretを含むヘッダー値は `<redacted>` とし、Cookieは名前だけを保存します。403本文では `Access denied`、`Forbidden`、Cloudflare、Akamai、Imperva、Incapsula、Bot、Request ID、IP restriction、rate limitを確認します。
 
 ## LINE通知
 
@@ -206,7 +214,7 @@ Secretsが未設定の場合は通知だけをスキップし、取得とJSON更
 `Actions` → `Update tennis availability` → `Run workflow` から、次の順序で確認します。
 
 1. `dry_run=true`、他はすべて `false` で実行
-2. `reservation-page-snapshots` Artifact内の3施設のHTML・PNG、`run-output/availability.json`、`run-output/notification-state.json` を確認
+2. `reservation-page-snapshots` Artifact内の3施設のHTML・PNG・P-Kashikan診断JSON、`run-output/availability.json`、`run-output/notification-state.json` を確認
 3. `dry_run=false`、`initialize_notification_baseline=true`、他は `false` で基準化
 4. `dry_run=false`、`test_notification=true` で固定テストメッセージを1件送信
 5. `dry_run=false`、`send_notification=true` で実差分通知を確認

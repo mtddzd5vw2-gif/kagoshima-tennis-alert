@@ -3,10 +3,12 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import platform
 import re
 import unicodedata
 import urllib.error
 import urllib.request
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
@@ -56,12 +58,87 @@ P_KASHIKAN_SLOT_PATTERN = re.compile(
     r"'(?P<date>\d{4}/\d{2}/\d{2})'\s*,\s*\d+\s*,\s*"
     r"'(?P<times>\d{8})'"
 )
+P_KASHIKAN_ACCEPT_LANGUAGE = "ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7"
+P_KASHIKAN_VIEWPORT = {"width": 1440, "height": 1000}
+P_KASHIKAN_DIAGNOSTIC_MARKERS = {
+    "Access denied": re.compile(r"access\s+denied", re.IGNORECASE),
+    "Forbidden": re.compile(r"\bforbidden\b", re.IGNORECASE),
+    "Cloudflare": re.compile(r"\bcloudflare\b", re.IGNORECASE),
+    "Akamai": re.compile(r"\bakamai\b", re.IGNORECASE),
+    "Imperva": re.compile(r"\bimperva\b", re.IGNORECASE),
+    "Incapsula": re.compile(r"\bincapsula\b", re.IGNORECASE),
+    "Bot": re.compile(r"\bbot\b", re.IGNORECASE),
+    "Request ID": re.compile(r"\brequest[-_ ]?id\b", re.IGNORECASE),
+    "IP restriction": re.compile(r"\bip[-_ ]?restriction\b", re.IGNORECASE),
+    "rate limit": re.compile(r"\brate[-_ ]?limit", re.IGNORECASE),
+}
+SENSITIVE_HEADER_NAMES = {
+    "authorization",
+    "cookie",
+    "proxy-authorization",
+    "set-cookie",
+    "x-api-key",
+}
+COOKIE_ATTRIBUTE_NAMES = {
+    "domain",
+    "expires",
+    "max-age",
+    "path",
+    "samesite",
+}
 ACCESS_DENIED_MARKERS = (
     "access denied",
     "forbidden",
     "too many requests",
     "アクセスが拒否",
 )
+
+
+def _cookie_names_from_header(value: str) -> list[str]:
+    names: set[str] = set()
+    for part in value.split(";"):
+        name, separator, _ = part.strip().partition("=")
+        if separator and name and name.lower() not in COOKIE_ATTRIBUTE_NAMES:
+            names.add(name)
+    return sorted(names)
+
+
+def _sanitize_headers(headers: dict[str, str]) -> tuple[dict[str, str], list[str]]:
+    """Return diagnostic-safe headers and cookie names without any secret values."""
+    safe: dict[str, str] = {}
+    cookie_names: set[str] = set()
+    for raw_name, raw_value in headers.items():
+        name = str(raw_name).lower()
+        value = str(raw_value)
+        if name in {"cookie", "set-cookie"}:
+            cookie_names.update(_cookie_names_from_header(value))
+            safe[name] = "<redacted>"
+        elif (
+            name in SENSITIVE_HEADER_NAMES
+            or "token" in name
+            or "secret" in name
+            or name.endswith("-key")
+        ):
+            safe[name] = "<redacted>"
+        else:
+            safe[name] = value
+    return dict(sorted(safe.items())), sorted(cookie_names)
+
+
+def _p_kashikan_body_markers(html: str) -> list[str]:
+    text = BeautifulSoup(html, "html.parser").get_text(" ", strip=True)
+    return [
+        label
+        for label, pattern in P_KASHIKAN_DIAGNOSTIC_MARKERS.items()
+        if pattern.search(text)
+    ]
+
+
+def _is_access_denied_response(status: int | None, html: str) -> bool:
+    page_text = BeautifulSoup(html, "html.parser").get_text(" ", strip=True).lower()
+    return status in {401, 403, 429} or any(
+        marker in page_text for marker in ACCESS_DENIED_MARKERS
+    )
 
 
 @dataclass(frozen=True)
@@ -123,6 +200,7 @@ class PlaywrightClient:
     def __init__(self) -> None:
         self._playwright: Any = None
         self._browser: Any = None
+        self._p_kashikan_context: Any = None
 
     def __enter__(self) -> "PlaywrightClient":
         from playwright.sync_api import sync_playwright
@@ -132,10 +210,155 @@ class PlaywrightClient:
         return self
 
     def __exit__(self, *_: object) -> None:
+        if self._p_kashikan_context is not None:
+            self._p_kashikan_context.close()
         if self._browser is not None:
             self._browser.close()
         if self._playwright is not None:
             self._playwright.stop()
+
+    def _get_p_kashikan_context(self) -> Any:
+        if self._browser is None or self._playwright is None:
+            raise RuntimeError("PlaywrightClient must be used as a context manager")
+        if self._p_kashikan_context is None:
+            desktop_chrome = dict(self._playwright.devices["Desktop Chrome"])
+            desktop_chrome.pop("default_browser_type", None)
+            desktop_chrome.update(
+                {
+                    "locale": "ja-JP",
+                    "timezone_id": "Asia/Tokyo",
+                    "viewport": dict(P_KASHIKAN_VIEWPORT),
+                    "java_script_enabled": True,
+                    "extra_http_headers": {
+                        "Accept-Language": P_KASHIKAN_ACCEPT_LANGUAGE,
+                    },
+                }
+            )
+            self._p_kashikan_context = self._browser.new_context(**desktop_chrome)
+        return self._p_kashikan_context
+
+    def _save_p_kashikan_diagnostics(
+        self,
+        page: Any,
+        context: Any,
+        response: Any,
+        html: str,
+        snapshot_directory: Path,
+        snapshot_name: str,
+    ) -> Path:
+        try:
+            response_headers_raw = response.all_headers() if response else {}
+        except Exception:
+            response_headers_raw = {}
+        try:
+            request_headers_raw = response.request.all_headers() if response else {}
+        except Exception:
+            request_headers_raw = {}
+        response_headers, response_cookie_names = _sanitize_headers(
+            response_headers_raw
+        )
+        request_headers, request_cookie_names = _sanitize_headers(
+            request_headers_raw
+        )
+        try:
+            context_cookie_names = sorted(
+                {
+                    str(cookie.get("name"))
+                    for cookie in context.cookies()
+                    if cookie.get("name")
+                }
+            )
+        except Exception:
+            context_cookie_names = []
+        try:
+            user_agent = page.evaluate("navigator.userAgent")
+            webdriver = page.evaluate("navigator.webdriver")
+        except Exception:
+            user_agent = None
+            webdriver = None
+        try:
+            page_title = page.title()
+        except Exception:
+            page_title = None
+        diagnostic = {
+            "schema_version": 1,
+            "captured_at": datetime.now(JST).isoformat(timespec="seconds"),
+            "execution_environment": (
+                "github_actions"
+                if os.getenv("GITHUB_ACTIONS", "").lower() == "true"
+                else "local"
+            ),
+            "runtime": {
+                "platform": platform.system(),
+                "platform_release": platform.release(),
+                "python_version": platform.python_version(),
+                "runner_os": os.getenv("RUNNER_OS"),
+                "runner_arch": os.getenv("RUNNER_ARCH"),
+                "runner_environment": os.getenv("RUNNER_ENVIRONMENT"),
+                "image_os": os.getenv("ImageOS"),
+                "image_version": os.getenv("ImageVersion"),
+                "github_repository": os.getenv("GITHUB_REPOSITORY"),
+                "github_run_id": os.getenv("GITHUB_RUN_ID"),
+                "github_run_attempt": os.getenv("GITHUB_RUN_ATTEMPT"),
+                "github_sha": os.getenv("GITHUB_SHA"),
+                "browser_version": (
+                    self._browser.version if self._browser is not None else None
+                ),
+            },
+            "request": {
+                "url": response.request.url if response else None,
+                "headers": request_headers,
+            },
+            "response": {
+                "final_url": page.url,
+                "status": response.status if response else None,
+                "title": page_title,
+                "headers": response_headers,
+                "body_length": len(html.encode("utf-8")),
+                "body_sha256": hashlib.sha256(html.encode("utf-8")).hexdigest(),
+                "matched_restriction_markers": _p_kashikan_body_markers(html),
+            },
+            "browser": {
+                "user_agent": user_agent,
+                "navigator_webdriver": webdriver,
+                "locale": "ja-JP",
+                "timezone": "Asia/Tokyo",
+                "accept_language": P_KASHIKAN_ACCEPT_LANGUAGE,
+                "viewport": dict(P_KASHIKAN_VIEWPORT),
+                "javascript_enabled": True,
+            },
+            "cookie_names": sorted(
+                set(context_cookie_names)
+                | set(response_cookie_names)
+                | set(request_cookie_names)
+            ),
+        }
+        diagnostic_path = snapshot_directory / f"{snapshot_name}-diagnostics.json"
+        diagnostic_path.write_text(
+            json.dumps(diagnostic, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        print(
+            "p_kashikan_diagnostic="
+            + json.dumps(
+                {
+                    "environment": diagnostic["execution_environment"],
+                    "status": diagnostic["response"]["status"],
+                    "final_url": diagnostic["response"]["final_url"],
+                    "title": diagnostic["response"]["title"],
+                    "user_agent": user_agent,
+                    "navigator_webdriver": webdriver,
+                    "cookie_names": diagnostic["cookie_names"],
+                    "matched_restriction_markers": diagnostic["response"][
+                        "matched_restriction_markers"
+                    ],
+                    "file": str(diagnostic_path),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+        return diagnostic_path
 
     def capture_page(
         self,
@@ -305,11 +528,7 @@ class PlaywrightClient:
         response_status: int | None = None
         html = ""
         step = "top"
-        context = self._browser.new_context(
-            locale="ja-JP",
-            timezone_id="Asia/Tokyo",
-            viewport={"width": 1440, "height": 1000},
-        )
+        context = self._get_p_kashikan_context()
         page = context.new_page()
         try:
             response = page.goto(
@@ -321,12 +540,17 @@ class PlaywrightClient:
             html, snapshot_error = self._save_page_snapshot(
                 page, snapshot_directory, f"{date_label}-top"
             )
+            self._save_p_kashikan_diagnostics(
+                page,
+                context,
+                response,
+                html,
+                snapshot_directory,
+                f"{date_label}-top",
+            )
             if snapshot_error:
                 raise ScrapeStructureError("snapshot_error", snapshot_error)
-            if response_status in {401, 403, 429} or any(
-                marker in BeautifulSoup(html, "html.parser").get_text(" ", strip=True).lower()
-                for marker in ACCESS_DENIED_MARKERS
-            ):
+            if _is_access_denied_response(response_status, html):
                 raise ScrapeStructureError(
                     "access_denied", f"Access denied (HTTP {response_status})"
                 )
@@ -342,8 +566,20 @@ class PlaywrightClient:
             html, snapshot_error = self._save_page_snapshot(
                 page, snapshot_directory, f"{date_label}-facility-search"
             )
+            self._save_p_kashikan_diagnostics(
+                page,
+                context,
+                response,
+                html,
+                snapshot_directory,
+                f"{date_label}-facility-search",
+            )
             if snapshot_error:
                 raise ScrapeStructureError("snapshot_error", snapshot_error)
+            if _is_access_denied_response(response_status, html):
+                raise ScrapeStructureError(
+                    "access_denied", f"Access denied (HTTP {response_status})"
+                )
             facility_radio = page.locator(f"#scd{facility_code}")
             if facility_radio.count() != 1:
                 raise ScrapeStructureError(
@@ -362,8 +598,20 @@ class PlaywrightClient:
             html, snapshot_error = self._save_page_snapshot(
                 page, snapshot_directory, f"{date_label}-facility-selected"
             )
+            self._save_p_kashikan_diagnostics(
+                page,
+                context,
+                response,
+                html,
+                snapshot_directory,
+                f"{date_label}-facility-selected",
+            )
             if snapshot_error:
                 raise ScrapeStructureError("snapshot_error", snapshot_error)
+            if _is_access_denied_response(response_status, html):
+                raise ScrapeStructureError(
+                    "access_denied", f"Access denied (HTTP {response_status})"
+                )
 
             step = "schedule"
             with page.expect_navigation(wait_until="domcontentloaded", timeout=60_000) as nav:
@@ -405,8 +653,20 @@ class PlaywrightClient:
             html, snapshot_error = self._save_page_snapshot(
                 page, snapshot_directory, f"{date_label}-schedule"
             )
+            self._save_p_kashikan_diagnostics(
+                page,
+                context,
+                response,
+                html,
+                snapshot_directory,
+                f"{date_label}-schedule",
+            )
             if snapshot_error:
                 raise ScrapeStructureError("snapshot_error", snapshot_error)
+            if _is_access_denied_response(response_status, html):
+                raise ScrapeStructureError(
+                    "access_denied", f"Access denied (HTTP {response_status})"
+                )
             return PageCapture(
                 html=html,
                 checked_at=checked_at,
@@ -458,7 +718,7 @@ class PlaywrightClient:
                 error_message=message,
             )
         finally:
-            context.close()
+            page.close()
 
 
 def generate_target_days(
@@ -770,8 +1030,9 @@ def error_result(
     reservation_url: str,
     error_type: str,
     error_message: str,
+    response_status: int | None = None,
 ) -> dict[str, Any]:
-    return {
+    result = {
         "date": target.date.isoformat(),
         "day_type": target.day_type,
         "holiday_name": target.holiday_name,
@@ -782,6 +1043,9 @@ def error_result(
         "reservation_url": reservation_url,
         "availability": [],
     }
+    if response_status is not None:
+        result["http_status"] = response_status
+    return result
 
 
 def pending_result(
@@ -820,6 +1084,7 @@ def scrape_kamoike(
             reservation_url,
             capture.error_type,
             capture.error_message or capture.error_type,
+            capture.response_status,
         )
     try:
         return parse_kamoike_html(
@@ -1111,6 +1376,7 @@ def scrape_p_kashikan(
             reservation_url,
             capture.error_type,
             capture.error_message or capture.error_type,
+            capture.response_status,
         )
     try:
         return parse_p_kashikan_html(
@@ -1186,10 +1452,65 @@ def empty_document() -> dict[str, Any]:
     }
 
 
+def _previous_date_entry(
+    document: dict[str, Any] | None,
+    facility_id: str,
+    target_date: date,
+) -> dict[str, Any] | None:
+    if not document:
+        return None
+    date_label = target_date.isoformat()
+    for facility in document.get("facilities", []):
+        if facility.get("id") != facility_id:
+            continue
+        for date_entry in facility.get("dates", []):
+            if date_entry.get("date") == date_label:
+                return date_entry
+    return None
+
+
+def _p_kashikan_403_fallback(
+    facility: Facility,
+    target: TargetDay,
+    attempted_result: dict[str, Any],
+    previous_document: dict[str, Any] | None,
+) -> dict[str, Any]:
+    checked_at = attempted_result.get("checked_at")
+    if not checked_at:
+        checked_at = datetime.now(JST).isoformat(timespec="seconds")
+    fallback = error_result(
+        target,
+        str(checked_at),
+        facility.url_template,
+        "access_denied",
+        str(attempted_result.get("error_message") or "Access denied (HTTP 403)"),
+        403,
+    )
+    previous_entry = _previous_date_entry(
+        previous_document,
+        facility.id,
+        target.date,
+    )
+    if previous_entry and (
+        previous_entry.get("status") == "success"
+        or previous_entry.get("fallback_from_previous") is True
+    ):
+        fallback["availability"] = deepcopy(
+            previous_entry.get("availability", previous_entry.get("slots", []))
+        )
+        fallback["fallback_from_previous"] = True
+        fallback["last_success_checked_at"] = (
+            previous_entry.get("last_success_checked_at")
+            or previous_entry.get("checked_at")
+        )
+    return fallback
+
+
 def build_document(
     targets: list[TargetDay],
     facilities: Iterable[Facility] | None = None,
     client_factory: Callable[[], PlaywrightClient] = PlaywrightClient,
+    previous_document: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     selected_facilities = tuple(facilities or configured_facilities())
     needs_browser = any(
@@ -1204,27 +1525,55 @@ def build_document(
     client_context: Any = client_factory() if needs_browser else _NoopClientContext()
 
     facility_results: list[dict[str, Any]] = []
+    p_kashikan_403: dict[str, Any] | None = None
     with client_context as client:
         for facility in selected_facilities:
             dates: list[dict[str, Any]] = []
             for target in targets:
-                try:
-                    dates.append(facility.scraper(client, facility, target))
-                except Exception as exc:
-                    reservation_url = (
-                        facility.url_template.format(date=target.date.isoformat())
-                        if facility.url_template
-                        else ""
+                is_p_kashikan = facility.p_kashikan_code is not None
+                if is_p_kashikan and p_kashikan_403 is not None:
+                    result = error_result(
+                        target,
+                        str(p_kashikan_403["checked_at"]),
+                        facility.url_template,
+                        "access_denied",
+                        "Skipped after P-Kashikan HTTP 403 earlier in this run",
+                        403,
                     )
-                    dates.append(
-                        error_result(
+                else:
+                    try:
+                        result = facility.scraper(client, facility, target)
+                    except Exception as exc:
+                        reservation_url = (
+                            facility.url_template.format(date=target.date.isoformat())
+                            if facility.url_template
+                            else ""
+                        )
+                        result = error_result(
                             target,
                             datetime.now(JST).isoformat(timespec="seconds"),
                             reservation_url,
                             "unexpected_error",
                             str(exc),
                         )
+                if is_p_kashikan and result.get("http_status") == 403:
+                    if p_kashikan_403 is None:
+                        p_kashikan_403 = {
+                            "checked_at": result["checked_at"],
+                            "facility_id": facility.id,
+                            "date": target.date.isoformat(),
+                        }
+                        print(
+                            "::warning::P-Kashikan returned HTTP 403; "
+                            "remaining P-Kashikan requests were skipped."
+                        )
+                    result = _p_kashikan_403_fallback(
+                        facility,
+                        target,
+                        result,
+                        previous_document,
                     )
+                dates.append(result)
             facility_results.append(
                 {
                     "id": facility.id,
@@ -2009,7 +2358,7 @@ def main() -> int:
     previous = load_document()
     state = load_notification_state()
     targets = generate_target_days()
-    current = build_document(targets)
+    current = build_document(targets, previous_document=previous)
     process_scrape_result(
         previous,
         current,

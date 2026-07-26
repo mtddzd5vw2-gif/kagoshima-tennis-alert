@@ -565,6 +565,59 @@ def test_p_kashikan_403_retains_last_successful_notification_baseline() -> None:
     assert observation.target_scopes == state["observed_slot_scopes"]
 
 
+def test_p_kashikan_403_does_not_change_notification_state(
+    tmp_path: Path,
+) -> None:
+    slot = make_slot(
+        "sumizei-observed",
+        facility_id="sumizei",
+        facility_name="SuMIzeiテニスコート",
+    )
+    previous = make_document([slot], {"sumizei": "success"})
+    current = make_document([], {"sumizei": "error"})
+    current_entry = current["facilities"][0]["dates"][0]
+    current_entry.update(
+        {
+            "error_type": "access_denied",
+            "error_message": "Access denied (HTTP 403)",
+            "http_status": 403,
+            "availability": [slot],
+            "fallback_from_previous": True,
+            "last_success_checked_at": CHECKED_AT,
+        }
+    )
+    state = make_state(
+        ["sumizei-observed"],
+        initialized_facility_ids=["sumizei"],
+    )
+    state["observed_slot_scopes"] = {
+        "sumizei-observed": f"sumizei|{TARGET_DATE}"
+    }
+    state["last_notification_status"] = "no_new_slots"
+    opener = RecordingOpener()
+
+    result, _, state_path = run_process(
+        tmp_path,
+        previous,
+        current,
+        state,
+        scrape.RunOptions(send_notification=True),
+        opener,
+    )
+
+    output_state = json.loads(
+        (tmp_path / "run-output" / "notification-state.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert result.notification_status == "no_new_slots"
+    assert result.notification_candidates == 0
+    assert result.notification_state_written is False
+    assert not state_path.exists()
+    assert output_state == state
+    assert opener.payloads == []
+
+
 def test_line_success_advances_notification_baseline(tmp_path: Path) -> None:
     slot = make_slot("slot-new")
     result, _, state_path = run_process(
