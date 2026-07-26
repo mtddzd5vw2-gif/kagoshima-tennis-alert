@@ -182,13 +182,34 @@ def test_initialized_false_only_initializes_without_notification(tmp_path: Path)
     assert opener.payloads == []
 
 
-def test_seeded_baseline_matches_current_slots() -> None:
+def test_seeded_baseline_follows_retained_state_policy() -> None:
     availability = scrape.load_document()
     state = scrape.load_notification_state()
-    current_ids = set(scrape.available_slot_keys(availability))
+    current_slots = scrape.available_slot_keys(availability)
+    current_ids = set(current_slots)
+    observed_ids = set(state["observed_slot_ids"])
+    observed_scopes = state["observed_slot_scopes"]
+    current_statuses = scrape.document_date_statuses(availability)
+    retained_ids = observed_ids - current_ids
+    normalized = scrape.observe_notification_changes(
+        state,
+        availability,
+        availability,
+    )
 
     assert current_ids
-    assert set(state["observed_slot_ids"]) == current_ids
+    assert current_ids <= observed_ids
+    assert observed_ids == normalized.target_ids
+    assert set(observed_scopes) == observed_ids
+    assert all(
+        observed_scopes[slot_id] == scrape.slot_scope(slot)
+        for slot_id, slot in current_slots.items()
+    )
+    assert all(
+        observed_scopes[slot_id] in current_statuses
+        and current_statuses[observed_scopes[slot_id]] != "success"
+        for slot_id in retained_ids
+    )
 
 
 def test_first_baseline_does_not_notify_current_slots(tmp_path: Path) -> None:
@@ -467,6 +488,81 @@ def test_disappeared_slot_is_notified_if_it_reappears_after_state_advance() -> N
     )
 
     assert [candidate["slot_id"] for candidate in reappeared.candidates] == ["slot-a"]
+
+
+def test_obsolete_and_out_of_window_slots_are_pruned_from_state() -> None:
+    disappeared = make_slot("disappeared")
+    expired = make_slot("expired")
+    expired["date"] = "2026-07-01"
+    retained_during_error = make_slot(
+        "retained-during-error",
+        facility_id="sumizei",
+        facility_name="SuMIzeiテニスコート",
+    )
+    previous = make_document(
+        [disappeared, retained_during_error],
+        {"kamoike-prefectural": "success", "sumizei": "success"},
+    )
+    state = make_state(
+        ["disappeared", "expired", "retained-during-error"],
+        initialized_facility_ids=["kamoike-prefectural", "sumizei"],
+    )
+    state["observed_slot_scopes"] = {
+        "disappeared": f"kamoike-prefectural|{TARGET_DATE}",
+        "expired": "kamoike-prefectural|2026-07-01",
+        "retained-during-error": f"sumizei|{TARGET_DATE}",
+    }
+    current = make_document(
+        [],
+        {"kamoike-prefectural": "success", "sumizei": "error"},
+    )
+
+    observation = scrape.observe_notification_changes(state, previous, current)
+
+    assert observation.target_ids == {"retained-during-error"}
+    assert observation.target_scopes == {
+        "retained-during-error": f"sumizei|{TARGET_DATE}"
+    }
+
+
+def test_p_kashikan_403_retains_last_successful_notification_baseline() -> None:
+    sumizei = make_slot(
+        "sumizei-observed",
+        facility_id="sumizei",
+        facility_name="SuMIzeiテニスコート",
+    )
+    toukai = make_slot(
+        "toukai-observed",
+        facility_id="toukai-tennis",
+        facility_name="東開庭球場",
+    )
+    facility_ids = ["sumizei", "toukai-tennis"]
+    previous = make_document(
+        [sumizei, toukai],
+        {facility_id: "success" for facility_id in facility_ids},
+    )
+    current = make_document(
+        [],
+        {facility_id: "error" for facility_id in facility_ids},
+    )
+    for facility in current["facilities"]:
+        date_entry = facility["dates"][0]
+        date_entry["error_type"] = "access_denied"
+        date_entry["error_message"] = "HTTP 403"
+    state = make_state(
+        ["sumizei-observed", "toukai-observed"],
+        initialized_facility_ids=facility_ids,
+    )
+    state["observed_slot_scopes"] = {
+        "sumizei-observed": f"sumizei|{TARGET_DATE}",
+        "toukai-observed": f"toukai-tennis|{TARGET_DATE}",
+    }
+
+    observation = scrape.observe_notification_changes(state, previous, current)
+
+    assert observation.candidates == []
+    assert observation.target_ids == {"sumizei-observed", "toukai-observed"}
+    assert observation.target_scopes == state["observed_slot_scopes"]
 
 
 def test_line_success_advances_notification_baseline(tmp_path: Path) -> None:
