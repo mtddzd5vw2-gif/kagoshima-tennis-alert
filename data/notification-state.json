@@ -6,7 +6,7 @@
     "sumizei",
     "toukai-tennis"
   ],
-  "updated_at": "2026-07-31T22:38:34+09:00",
+  "updated_at": "2026-07-31T23:08:28+09:00",
   "observed_slot_ids": [
     "094db90b506cc51a4097d559",
     "111d9bad82e9c09546431271",
@@ -149,5 +149,5 @@
     "f4e3ff83515837b48c98cf24": "toukai-tennis|2026-08-01",
     "ff926b91c2c410445e1d41f0": "kamoike-prefectural|2026-08-01"
   },
-  "last_notification_status": "notification_succeeded"
+  "last_notification_status": "no_new_slots"
 }
