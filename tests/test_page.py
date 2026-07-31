@@ -369,6 +369,7 @@ def test_existing_json_renders_counts_status_dates_and_relative_data_path(page_l
     assert page.locator("#total-availability").inner_text() == expected_total_label
     assert page.locator("#facility-counts").inner_text() == expected_breakdown
     assert page.locator(".facility-header h2").all_inner_texts() == expected_facility_names
+    assert "東開庭球場" in expected_facility_names
     assert page.locator(".status-badge").all_inner_texts() == expected_status_labels
     assert page.locator(".availability-count").all_inner_texts() == expected_count_labels
     facility_cards = page.locator(".facility")
