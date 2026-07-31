@@ -49,6 +49,7 @@ def make_document(
             {
                 "id": facility_id,
                 "name": facility_slots[0]["facility_name"] if facility_slots else facility_id,
+                "notification_enabled": facility_id != "toukai-tennis",
                 "dates": [
                     {
                         "date": TARGET_DATE,
@@ -340,11 +341,11 @@ def test_p_kashikan_corrected_ids_migrate_without_duplicate_notifications(
     assert opener.payloads == []
 
 
-def test_toukai_first_observation_is_baselined_without_notification(
+def test_toukai_only_new_slot_is_observed_without_line_notification(
     tmp_path: Path,
 ) -> None:
     toukai_slot = make_slot(
-        "toukai-existing",
+        "toukai-new",
         facility_id="toukai-tennis",
         facility_name="東開庭球場",
         court_name="Aコート(ナイターあり)",
@@ -360,16 +361,18 @@ def test_toukai_first_observation_is_baselined_without_notification(
 
     result, _, state_path = run_process(
         tmp_path,
-        make_document([], {"kamoike-prefectural": "success", "sumizei": "success"}),
+        make_document([], statuses),
         make_document([toukai_slot], statuses),
-        make_state([]),
+        make_state([], initialized_facility_ids=list(statuses)),
         scrape.RunOptions(send_notification=True),
         opener,
     )
 
     saved = json.loads(state_path.read_text(encoding="utf-8"))
     assert result.notification_status == "no_new_slots"
-    assert saved["observed_slot_ids"] == ["toukai-existing"]
+    assert result.notification_candidates == 0
+    assert result.line_result is None
+    assert saved["observed_slot_ids"] == ["toukai-new"]
     assert saved["initialized_facility_ids"] == [
         "kamoike-prefectural",
         "sumizei",
@@ -378,12 +381,46 @@ def test_toukai_first_observation_is_baselined_without_notification(
     assert opener.payloads == []
 
 
-def test_toukai_baseline_does_not_suppress_existing_facility_candidate(
+def test_sumizei_only_new_slot_sends_line_notification(tmp_path: Path) -> None:
+    sumizei_slot = make_slot(
+        "sumizei-new",
+        facility_id="sumizei",
+        facility_name="SuMIzeiテニスコート",
+    )
+    statuses = {
+        "kamoike-prefectural": "success",
+        "sumizei": "success",
+        "toukai-tennis": "success",
+    }
+    opener = RecordingOpener()
+
+    result, _, state_path = run_process(
+        tmp_path,
+        make_document([], statuses),
+        make_document([sumizei_slot], statuses),
+        make_state([], initialized_facility_ids=list(statuses)),
+        scrape.RunOptions(send_notification=True),
+        opener,
+    )
+
+    saved = json.loads(state_path.read_text(encoding="utf-8"))
+    assert result.notification_status == "notification_succeeded"
+    assert result.notification_candidates == 1
+    assert saved["observed_slot_ids"] == ["sumizei-new"]
+    assert len(opener.payloads) == 1
+    assert "SuMIzeiテニスコート" in opener.payloads[0]["messages"][0]["text"]
+
+
+def test_toukai_and_sumizei_new_slots_only_notify_sumizei(
     tmp_path: Path,
 ) -> None:
-    existing_facility_slot = make_slot("kamoike-new")
+    sumizei_slot = make_slot(
+        "sumizei-new",
+        facility_id="sumizei",
+        facility_name="SuMIzeiテニスコート",
+    )
     toukai_slot = make_slot(
-        "toukai-existing",
+        "toukai-new",
         facility_id="toukai-tennis",
         facility_name="東開庭球場",
         court_name="Bコート(ナイターなし)",
@@ -397,9 +434,9 @@ def test_toukai_baseline_does_not_suppress_existing_facility_candidate(
 
     result, _, state_path = run_process(
         tmp_path,
-        make_document([], {"kamoike-prefectural": "success", "sumizei": "success"}),
-        make_document([existing_facility_slot, toukai_slot], statuses),
-        make_state([]),
+        make_document([], statuses),
+        make_document([sumizei_slot, toukai_slot], statuses),
+        make_state([], initialized_facility_ids=list(statuses)),
         scrape.RunOptions(send_notification=True),
         opener,
     )
@@ -407,19 +444,71 @@ def test_toukai_baseline_does_not_suppress_existing_facility_candidate(
     saved = json.loads(state_path.read_text(encoding="utf-8"))
     assert result.notification_status == "notification_succeeded"
     assert result.notification_candidates == 1
-    assert set(saved["observed_slot_ids"]) == {"kamoike-new", "toukai-existing"}
+    assert set(saved["observed_slot_ids"]) == {"sumizei-new", "toukai-new"}
     assert len(opener.payloads) == 1
     message = opener.payloads[0]["messages"][0]["text"]
-    assert "鴨池県営テニスコート" in message
+    assert "SuMIzeiテニスコート" in message
     assert "東開庭球場" not in message
 
 
-def test_line_failure_keeps_existing_candidate_but_baselines_toukai(
+def test_line_failure_keeps_sumizei_candidate_but_observes_toukai(
     tmp_path: Path,
 ) -> None:
-    existing_facility_slot = make_slot("kamoike-new")
+    sumizei_slot = make_slot(
+        "sumizei-new",
+        facility_id="sumizei",
+        facility_name="SuMIzeiテニスコート",
+    )
     toukai_slot = make_slot(
-        "toukai-existing",
+        "toukai-new",
+        facility_id="toukai-tennis",
+        facility_name="東開庭球場",
+    )
+    disappeared_toukai_slot = make_slot(
+        "toukai-old",
+        facility_id="toukai-tennis",
+        facility_name="東開庭球場",
+        court_name="以前のコート",
+    )
+    statuses = {
+        "kamoike-prefectural": "success",
+        "sumizei": "success",
+        "toukai-tennis": "success",
+    }
+    current = make_document([sumizei_slot, toukai_slot], statuses)
+    previous = make_document([disappeared_toukai_slot], statuses)
+    state = make_state(
+        ["toukai-old"],
+        initialized_facility_ids=list(statuses),
+    )
+    state["observed_slot_scopes"] = {
+        "toukai-old": f"toukai-tennis|{TARGET_DATE}"
+    }
+
+    result, _, state_path = run_process(
+        tmp_path,
+        previous,
+        current,
+        state,
+        scrape.RunOptions(send_notification=True),
+        RecordingOpener(status=500),
+    )
+
+    saved = json.loads(state_path.read_text(encoding="utf-8"))
+    assert result.notification_status == "notification_http_error"
+    assert result.notification_candidates == 1
+    assert saved["observed_slot_ids"] == ["toukai-new"]
+    retry = scrape.observe_notification_changes(saved, current, current)
+    assert [slot["slot_id"] for slot in retry.candidates] == ["sumizei-new"]
+    assert retry.suppressed_notification_ids == set()
+    assert retry.suppressed_initial_ids == set()
+
+
+def test_toukai_reappearance_is_observed_without_line_notification(
+    tmp_path: Path,
+) -> None:
+    toukai_slot = make_slot(
+        "toukai-reappeared",
         facility_id="toukai-tennis",
         facility_name="東開庭球場",
     )
@@ -428,26 +517,44 @@ def test_line_failure_keeps_existing_candidate_but_baselines_toukai(
         "sumizei": "success",
         "toukai-tennis": "success",
     }
-    current = make_document([existing_facility_slot, toukai_slot], statuses)
-    previous = make_document(
-        [], {"kamoike-prefectural": "success", "sumizei": "success"}
+    initial_state = make_state(
+        ["toukai-reappeared"],
+        initialized_facility_ids=list(statuses),
     )
+    initial_state["observed_slot_scopes"] = {
+        "toukai-reappeared": f"toukai-tennis|{TARGET_DATE}"
+    }
 
-    result, _, state_path = run_process(
-        tmp_path,
-        previous,
-        current,
-        make_state([]),
+    _, _, disappeared_state_path = run_process(
+        tmp_path / "disappeared",
+        make_document([toukai_slot], statuses),
+        make_document([], statuses),
+        initial_state,
         scrape.RunOptions(send_notification=True),
-        RecordingOpener(status=500),
+        RecordingOpener(),
+    )
+    disappeared_state = json.loads(
+        disappeared_state_path.read_text(encoding="utf-8")
+    )
+    assert disappeared_state["observed_slot_ids"] == []
+
+    opener = RecordingOpener()
+    result, _, reappeared_state_path = run_process(
+        tmp_path / "reappeared",
+        make_document([], statuses),
+        make_document([toukai_slot], statuses),
+        disappeared_state,
+        scrape.RunOptions(send_notification=True),
+        opener,
     )
 
-    saved = json.loads(state_path.read_text(encoding="utf-8"))
-    assert result.notification_status == "notification_http_error"
-    assert saved["observed_slot_ids"] == ["toukai-existing"]
-    retry = scrape.observe_notification_changes(saved, current, current)
-    assert [slot["slot_id"] for slot in retry.candidates] == ["kamoike-new"]
-    assert retry.suppressed_initial_ids == set()
+    reappeared_state = json.loads(
+        reappeared_state_path.read_text(encoding="utf-8")
+    )
+    assert result.notification_status == "no_new_slots"
+    assert result.notification_candidates == 0
+    assert reappeared_state["observed_slot_ids"] == ["toukai-reappeared"]
+    assert opener.payloads == []
 
 
 def test_disappeared_slot_is_not_notified() -> None:
@@ -686,8 +793,25 @@ def test_missing_secrets_skips_safely_and_retains_candidate(
     assert saved["observed_slot_ids"] == []
 
 
-def test_dry_run_does_not_send_or_modify_repository_files(tmp_path: Path) -> None:
-    slot = make_slot("slot-new")
+def test_dry_run_does_not_send_or_modify_repository_files(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    sumizei_slot = make_slot(
+        "sumizei-new",
+        facility_id="sumizei",
+        facility_name="SuMIzeiテニスコート",
+    )
+    toukai_slot = make_slot(
+        "toukai-new",
+        facility_id="toukai-tennis",
+        facility_name="東開庭球場",
+    )
+    statuses = {
+        "kamoike-prefectural": "success",
+        "sumizei": "success",
+        "toukai-tennis": "success",
+    }
     data_path = tmp_path / "data.json"
     state_path = tmp_path / "state.json"
     data_path.write_text("previous-data", encoding="utf-8")
@@ -695,9 +819,9 @@ def test_dry_run_does_not_send_or_modify_repository_files(tmp_path: Path) -> Non
     opener = RecordingOpener()
 
     result = scrape.process_scrape_result(
-        make_document([]),
-        make_document([slot]),
-        make_state([]),
+        make_document([], statuses),
+        make_document([sumizei_slot, toukai_slot], statuses),
+        make_state([], initialized_facility_ids=list(statuses)),
         scrape.RunOptions(dry_run=True, send_notification=True, test_notification=True),
         data_path=data_path,
         state_path=state_path,
@@ -708,8 +832,26 @@ def test_dry_run_does_not_send_or_modify_repository_files(tmp_path: Path) -> Non
     )
 
     assert result.notification_status == "dry_run"
+    assert result.notification_candidates == 1
     assert data_path.read_text(encoding="utf-8") == "previous-data"
     assert state_path.read_text(encoding="utf-8") == "previous-state"
+    output_availability = json.loads(
+        (tmp_path / "run-output" / "availability.json").read_text(encoding="utf-8")
+    )
+    output_state = json.loads(
+        (tmp_path / "run-output" / "notification-state.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert set(scrape.available_slot_keys(output_availability)) == {
+        "sumizei-new",
+        "toukai-new",
+    }
+    assert set(output_state["observed_slot_ids"]) == {
+        "sumizei-new",
+        "toukai-new",
+    }
+    assert "notification_candidates=1" in capsys.readouterr().out
     assert opener.payloads == []
 
 

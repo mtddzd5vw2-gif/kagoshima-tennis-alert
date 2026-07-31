@@ -157,6 +157,7 @@ class Facility:
     scraper: Callable[["PageClient", "Facility", TargetDay], dict[str, Any]]
     requires_browser: bool = False
     p_kashikan_code: str | None = None
+    notification_enabled: bool = True
 
 
 @dataclass(frozen=True)
@@ -1433,6 +1434,7 @@ def configured_facilities() -> tuple[Facility, ...]:
             scraper=scrape_p_kashikan,
             requires_browser=True,
             p_kashikan_code=TOUKAI_FACILITY_CODE,
+            notification_enabled=False,
         ),
     )
 
@@ -1578,6 +1580,7 @@ def build_document(
                 {
                     "id": facility.id,
                     "name": facility.name,
+                    "notification_enabled": facility.notification_enabled,
                     "dates": dates,
                 }
             )
@@ -1997,6 +2000,25 @@ def document_facility_ids(document: dict[str, Any]) -> set[str]:
     }
 
 
+def notification_enabled_facility_ids(document: dict[str, Any]) -> set[str]:
+    configured_defaults = {
+        facility.id: facility.notification_enabled
+        for facility in configured_facilities()
+    }
+    enabled_ids: set[str] = set()
+    for facility in document.get("facilities", []):
+        facility_id = str(facility.get("id", ""))
+        if not facility_id:
+            continue
+        enabled = facility.get(
+            "notification_enabled",
+            configured_defaults.get(facility_id, True),
+        )
+        if enabled is True:
+            enabled_ids.add(facility_id)
+    return enabled_ids
+
+
 def successful_facility_ids(document: dict[str, Any]) -> set[str]:
     return {
         str(facility.get("id", ""))
@@ -2083,6 +2105,7 @@ def migrate_p_kashikan_observed_ids(
 @dataclass(frozen=True)
 class NotificationObservation:
     candidates: list[dict[str, Any]]
+    suppressed_notification_ids: set[str]
     suppressed_recovery_ids: set[str]
     suppressed_initial_ids: set[str]
     target_ids: set[str]
@@ -2118,6 +2141,9 @@ def observe_notification_changes(
     newly_initialized_facility_ids = (
         target_facility_ids - initialized_facility_ids
     )
+    notification_enabled_ids = notification_enabled_facility_ids(
+        current_availability
+    )
 
     target_ids = set(current_slots)
     target_scopes = {
@@ -2134,6 +2160,7 @@ def observe_notification_changes(
                 target_scopes[slot_id] = scope
 
     candidates: list[dict[str, Any]] = []
+    suppressed_notification_ids: set[str] = set()
     suppressed_recovery_ids: set[str] = set()
     suppressed_initial_ids: set[str] = set()
     for slot_id in sorted(set(current_slots) - previous_ids):
@@ -2146,14 +2173,42 @@ def observe_notification_changes(
         if previous_status and previous_status != "success":
             suppressed_recovery_ids.add(slot_id)
             continue
+        if str(slot.get("facility_id", "")) not in notification_enabled_ids:
+            suppressed_notification_ids.add(slot_id)
+            continue
         candidates.append(slot)
 
-    failure_ids = previous_ids | suppressed_recovery_ids | suppressed_initial_ids
+    notification_disabled_ids = (
+        document_facility_ids(current_availability) - notification_enabled_ids
+    )
+    retained_notification_ids = {
+        slot_id
+        for slot_id in previous_ids
+        if previous_scopes.get(slot_id, "").partition("|")[0]
+        not in notification_disabled_ids
+    }
+    notification_disabled_target_ids = {
+        slot_id
+        for slot_id in target_ids
+        if target_scopes.get(slot_id, "").partition("|")[0]
+        in notification_disabled_ids
+    }
+    failure_ids = (
+        retained_notification_ids
+        | notification_disabled_target_ids
+        | suppressed_recovery_ids
+        | suppressed_initial_ids
+    )
     failure_scopes = dict(previous_scopes)
-    for slot_id in suppressed_recovery_ids | suppressed_initial_ids:
+    for slot_id in (
+        suppressed_notification_ids
+        | suppressed_recovery_ids
+        | suppressed_initial_ids
+    ):
         failure_scopes[slot_id] = target_scopes[slot_id]
     return NotificationObservation(
         candidates=candidates,
+        suppressed_notification_ids=suppressed_notification_ids,
         suppressed_recovery_ids=suppressed_recovery_ids,
         suppressed_initial_ids=suppressed_initial_ids,
         target_ids=target_ids,
@@ -2324,7 +2379,7 @@ def process_scrape_result(
 
     write_notification_state(next_state, output_directory / "notification-state.json")
     print(
-        f"new_slots={len(observation.candidates)} "
+        f"notification_candidates={len(observation.candidates)} "
         f"notification={notification_status} dry_run={options.dry_run}"
     )
     return RunResult(

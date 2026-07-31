@@ -12,6 +12,7 @@
     {
       "id": "kamoike-prefectural",
       "name": "鴨池県営テニスコート",
+      "notification_enabled": true,
       "dates": [
         {
           "date": "2026-08-01",
@@ -642,6 +643,7 @@
     {
       "id": "sumizei",
       "name": "SuMIzeiテニスコート",
+      "notification_enabled": true,
       "dates": [
         {
           "date": "2026-08-01",
@@ -803,6 +805,7 @@
     {
       "id": "toukai-tennis",
       "name": "東開庭球場",
+      "notification_enabled": false,
       "dates": [
         {
           "date": "2026-08-01",

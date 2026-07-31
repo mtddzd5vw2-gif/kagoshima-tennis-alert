@@ -531,8 +531,10 @@ def test_configured_facilities_include_both_p_kashikan_facilities() -> None:
         "toukai-tennis",
     }
     assert facilities["sumizei"].p_kashikan_code == "029"
+    assert facilities["sumizei"].notification_enabled is True
     assert facilities["toukai-tennis"].name == "東開庭球場"
     assert facilities["toukai-tennis"].p_kashikan_code == "131"
+    assert facilities["toukai-tennis"].notification_enabled is False
 
 
 def test_build_document_integrates_all_three_facilities() -> None:
@@ -554,6 +556,9 @@ def test_build_document_integrates_all_three_facilities() -> None:
         "sumizei",
         "toukai-tennis",
     }
+    assert facilities["kamoike-prefectural"]["notification_enabled"] is True
+    assert facilities["sumizei"]["notification_enabled"] is True
+    assert facilities["toukai-tennis"]["notification_enabled"] is False
     assert facilities["kamoike-prefectural"]["dates"][0]["status"] == "success"
     assert facilities["sumizei"]["dates"][0]["status"] == "success"
     assert len(facilities["sumizei"]["dates"][0]["availability"]) == 3
