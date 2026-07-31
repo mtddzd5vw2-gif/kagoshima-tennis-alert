@@ -139,6 +139,16 @@ def expected_availability_count(facility: dict) -> int:
     return sum(
         len(date_entry.get("availability", []))
         for date_entry in facility.get("dates", [])
+        if date_entry.get("status") == "success"
+    )
+
+
+def expected_empty_success_count(facility: dict) -> int:
+    return sum(
+        1
+        for date_entry in facility.get("dates", [])
+        if date_entry.get("status") == "success"
+        and not date_entry.get("availability", [])
     )
 
 
@@ -329,6 +339,10 @@ def test_existing_json_renders_counts_status_dates_and_relative_data_path(page_l
         expected_availability_count(facility)
         for facility in AVAILABILITY["facilities"]
     ]
+    expected_empty_counts = [
+        expected_empty_success_count(facility)
+        for facility in AVAILABILITY["facilities"]
+    ]
     expected_total = sum(expected_counts)
     expected_total_label = (
         f"合計{expected_total}件の空き候補"
@@ -357,6 +371,24 @@ def test_existing_json_renders_counts_status_dates_and_relative_data_path(page_l
     assert page.locator(".facility-header h2").all_inner_texts() == expected_facility_names
     assert page.locator(".status-badge").all_inner_texts() == expected_status_labels
     assert page.locator(".availability-count").all_inner_texts() == expected_count_labels
+    facility_cards = page.locator(".facility")
+    for index, expected_empty_count in enumerate(expected_empty_counts):
+        card = facility_cards.nth(index)
+        toggle = card.locator(".empty-days-toggle")
+        container = card.locator(".empty-days-container")
+        if expected_empty_count:
+            assert toggle.count() == 1
+            assert (
+                toggle.inner_text()
+                == f"空きなしの日を表示（{expected_empty_count}日）"
+            )
+            assert toggle.get_attribute("aria-expanded") == "false"
+            assert toggle.get_attribute("aria-controls") == container.get_attribute("id")
+            assert container.locator(".date-block").count() == expected_empty_count
+            assert container.is_hidden()
+        else:
+            assert toggle.count() == 0
+            assert container.count() == 0
     assert all(
         ":59" not in time_label
         for time_label in page.locator(".slot strong").all_inner_texts()
@@ -423,13 +455,25 @@ def test_p_kashikan_facilities_render_official_boundary_times(page_loader) -> No
 
 
 def test_empty_days_toggle_updates_aria_and_visibility(page_loader) -> None:
-    page, _, _, _ = page_loader()
+    data = make_document(
+        [
+            make_date("2026-08-01", availability_count=1),
+            make_date("2026-08-02"),
+            make_date("2026-08-03"),
+            make_date("2026-08-04", "error"),
+        ]
+    )
+    page, _, _, _ = page_loader(data)
     toggle = page.locator(".facility").first.locator(".empty-days-toggle")
     container = page.locator(".facility").first.locator(".empty-days-container")
 
     assert toggle.inner_text() == "空きなしの日を表示（2日）"
     assert toggle.get_attribute("aria-expanded") == "false"
     assert toggle.get_attribute("aria-controls") == container.get_attribute("id")
+    assert page.locator(".facility > .date-block").count() == 2
+    assert page.locator(".facility > .date-block .slot").count() == 1
+    assert page.locator(".facility > .date-block .error").count() == 1
+    assert container.locator(".date-block").count() == 2
     assert container.is_hidden()
 
     toggle.click()
