@@ -6,7 +6,7 @@
     "sumizei",
     "toukai-tennis"
   ],
-  "updated_at": "2026-08-01T10:08:41+09:00",
+  "updated_at": "2026-08-01T10:38:35+09:00",
   "observed_slot_ids": [
     "02dd69e01d8386fa2bfc7afa",
     "094db90b506cc51a4097d559",
@@ -40,7 +40,6 @@
     "61aa46701eda153d696a0056",
     "682023ee2b387088d1d45ab7",
     "6a096896ad4582739e5555b7",
-    "6ea274d0272df07401ca4d73",
     "6fecd3772cba41b2a6e408e5",
     "7472a534467cfb1ccb3efd28",
     "807d1f6231c1c1db99e69c48",
@@ -54,7 +53,9 @@
     "8d9579d46035ff7ce94a6996",
     "92aa592a069fd90fe96b2e91",
     "946a3cfe2654210dbc0b13dd",
+    "99d92f3bb97f0947c8a2f514",
     "9d3aaaee6bc7323a5ff759a4",
+    "a0d0da4aacdde14a0ec8888e",
     "a4095ec885f4b5752a024d3b",
     "a518e6c89c0430c64b292e59",
     "a7144d1b67e2806b4705d513",
@@ -124,7 +125,6 @@
     "61aa46701eda153d696a0056": "kamoike-prefectural|2026-08-11",
     "682023ee2b387088d1d45ab7": "sumizei|2026-08-11",
     "6a096896ad4582739e5555b7": "kamoike-prefectural|2026-08-11",
-    "6ea274d0272df07401ca4d73": "toukai-tennis|2026-08-15",
     "6fecd3772cba41b2a6e408e5": "kamoike-prefectural|2026-08-08",
     "7472a534467cfb1ccb3efd28": "kamoike-prefectural|2026-08-08",
     "807d1f6231c1c1db99e69c48": "kamoike-prefectural|2026-08-09",
@@ -138,7 +138,9 @@
     "8d9579d46035ff7ce94a6996": "kamoike-prefectural|2026-08-09",
     "92aa592a069fd90fe96b2e91": "sumizei|2026-08-01",
     "946a3cfe2654210dbc0b13dd": "sumizei|2026-08-01",
+    "99d92f3bb97f0947c8a2f514": "toukai-tennis|2026-08-01",
     "9d3aaaee6bc7323a5ff759a4": "kamoike-prefectural|2026-08-02",
+    "a0d0da4aacdde14a0ec8888e": "toukai-tennis|2026-08-15",
     "a4095ec885f4b5752a024d3b": "kamoike-prefectural|2026-08-08",
     "a518e6c89c0430c64b292e59": "kamoike-prefectural|2026-08-02",
     "a7144d1b67e2806b4705d513": "kamoike-prefectural|2026-08-08",
@@ -175,5 +177,5 @@
     "fdfd4801cd05bf366087ee21": "kamoike-prefectural|2026-08-15",
     "ffcfa7e014e9b239f925b382": "kamoike-prefectural|2026-08-15"
   },
-  "last_notification_status": "notification_succeeded"
+  "last_notification_status": "no_new_slots"
 }
