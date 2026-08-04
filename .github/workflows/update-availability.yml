@@ -94,6 +94,10 @@ jobs:
             run-output/availability.json
             run-output/notification-state.json
             index.html
+            auth
+            account
+            legal
+            assets
           if-no-files-found: warn
           retention-days: 7
 
@@ -140,6 +144,10 @@ jobs:
           mkdir -p _site/data
           cp run-artifact/index.html _site/index.html
           cp run-artifact/run-output/availability.json _site/data/availability.json
+          cp -R run-artifact/auth _site/auth
+          cp -R run-artifact/account _site/account
+          cp -R run-artifact/legal _site/legal
+          cp -R run-artifact/assets _site/assets
 
       - name: Upload GitHub Pages artifact
         uses: actions/upload-pages-artifact@v3
