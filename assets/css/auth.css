@@ -261,6 +261,18 @@ h3 {
   margin-bottom: 0;
 }
 
+.status-text[data-state="success"] {
+  color: var(--accent-dark);
+  font-weight: 700;
+}
+
+.status-text[data-state="error"],
+[data-callback-status][data-state="error"],
+[data-account-loading][data-state="error"] {
+  color: var(--danger);
+  font-weight: 700;
+}
+
 .legal-document {
   padding: clamp(1.4rem, 5vw, 3.5rem);
 }

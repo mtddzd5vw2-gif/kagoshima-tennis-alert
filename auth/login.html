@@ -10,6 +10,8 @@
     >
     <title>ログイン・会員登録 | Tennis Court Watcher</title>
     <link rel="stylesheet" href="../assets/css/auth.css">
+    <script src="../assets/config/auth-config.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.106.2/dist/umd/supabase.js"></script>
     <script src="../assets/js/auth-foundation.js" defer></script>
   </head>
   <body data-page="auth-login">
@@ -41,9 +43,11 @@
         </section>
 
         <section class="panel" aria-labelledby="form-title">
-          <p class="notice">現在は画面の土台のみです。メール送信や会員登録は行いません。</p>
+          <p class="notice">
+            マジックリンクは、原則としてこの画面を開いた同じブラウザで開いてください。
+          </p>
           <h2 id="form-title">マジックリンクを受け取る</h2>
-          <form data-auth-foundation-form>
+          <form data-auth-form novalidate>
             <div class="field">
               <label for="email">メールアドレス</label>
               <input
@@ -57,7 +61,7 @@
               >
             </div>
             <label class="consent" for="terms-consent">
-              <input id="terms-consent" name="terms-consent" type="checkbox">
+              <input id="terms-consent" name="terms-consent" type="checkbox" required>
               <span>
                 初めて登録する場合は、
                 <a href="../legal/terms.html">利用規約（暫定案）</a>と
@@ -69,7 +73,7 @@
               マジックリンクを送る
             </button>
             <p id="form-note" class="form-note">
-              Supabase未接続のため送信ボタンは無効です。
+              有効なメールアドレスを入力し、利用規約への同意を確認すると送信できます。
             </p>
             <p class="status-text" data-form-status aria-live="polite"></p>
           </form>

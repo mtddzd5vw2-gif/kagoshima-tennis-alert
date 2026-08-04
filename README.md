@@ -3,7 +3,7 @@
 鹿児島県のテニスコート予約サイトを確認し、直近15日間の土日祝にある8:00〜13:00の空き候補を、GitHub PagesとLINEで知らせるプロジェクトです。
 
 > [!IMPORTANT]
-> 鴨池県営テニスコート、SuMIzeiテニスコート、東開庭球場は、いずれも認証不要の実画面に対応済みです。自動予約、ログイン、利用者ID・パスワードの使用や保存は行いません。
+> 鴨池県営テニスコート、SuMIzeiテニスコート、東開庭球場の空き取得は、いずれも認証不要の実画面に対応済みです。スクレイパーは予約サイトの利用者ID・パスワードを使用・保存せず、自動予約も行いません。会員ログインはこれとは分離したSupabase Authのメールマジックリンクを使用します。
 
 ## Documentation
 
@@ -28,16 +28,21 @@
 - 空きなしの正常取得日は初期状態で折りたたみ、施設ごとに表示を切り替え
 - 成功・失敗を問わず診断用HTMLとPNGを保存
 - pytest、GitHub Actions、Pages自動配信
-- Phase 1の認証用静的画面（ログイン・会員登録、認証callback、マイページ、利用規約、プライバシーポリシー）
-- 共通の認証画面CSS・JavaScriptと、秘密情報を含まないSupabase公開設定サンプル
+- Supabase Authのメールマジックリンク送信、PKCE callback、セッション確認、ログアウト
+- 認証用画面（ログイン・会員登録、認証callback、マイページ、利用規約、プライバシーポリシー）
+- 固定版 `supabase-js` v2と、Repository Variablesから生成するブラウザ公開設定
 
 空き状況は候補です。予約前に必ず公式サイトで最新情報を確認してください。
 
 ## Phase 1 認証プロジェクト基盤
 
-2026-08-04時点で、Supabase Auth/PostgreSQL、メールのマジックリンク認証、GitHub Pages継続を正式方針としました。Phase 1は利用規約同意、会員登録、メール認証、ログイン、ログアウト、最小限のマイページ、退会だけを対象とします。通知条件、利用者別通知、LINE連携、課金は対象外です。
+2026-08-04時点で、Supabase Auth、メールのマジックリンク認証、GitHub Pages、PKCEを正式方針としました。ブラウザは固定版 `@supabase/supabase-js@2.106.2` を使用し、公開Project URLとpublishable keyだけで接続します。`flowType: "pkce"`、`persistSession: true`、`autoRefreshToken: true` を明示しています。
 
-現在は安全な静的フロントエンドの土台まで実装済みです。Supabase SDK、API呼び出し、メール送信、セッション処理、会員データの取得・更新、退会処理はまだ実装していません。ログイン画面の送信ボタンとマイページの操作ボタンは、誤って外部処理を開始しないよう無効にしています。
+実装済みの範囲は、メール形式・利用規約同意の確認、`signInWithOtp` によるマジックリンク送信、codeの `exchangeCodeForSession`、認証URLの消去、`getSession` によるマイページ保護、ログイン中メールアドレス表示、`signOut` です。成功・失敗文言からアカウントの存在有無を推測しにくくし、メールアドレス・code・token・認証URLをconsoleへ出しません。
+
+PKCEのcode verifierはリンクを要求したブラウザ側に保存されるため、マジックリンクは原則としてログイン操作を開始した同じブラウザで開く必要があります。別端末・別ブラウザで開いて認証に失敗した場合は、利用するブラウザでログイン画面から再送してください。
+
+今回は会員DB、`profiles`、RLS、規約同意履歴、Auth Hook、退会Edge Function、通知設定を実装していません。利用規約同意は送信前のUI確認のみで、履歴保存ではありません。退会ボタンは準備中のままです。
 
 追加した画面は次のとおりです。すべてGitHub Pagesのリポジトリ配下で動く相対リンクを使用します。
 
@@ -75,6 +80,7 @@
 │   └── terms.html
 ├── scripts/
 │   ├── __init__.py
+│   ├── generate_auth_config.py
 │   └── scrape.py
 ├── tests/
 │   ├── fixtures/kamoike_schedule.html
@@ -219,6 +225,22 @@ python -m pytest
 
 テストfixtureは実DOMから抽出した必要最小限の構造だけを匿名化して保存しています。取得したページ全体はfixtureとしてコミットしません。
 
+### ローカルでの認証画面確認
+
+PowerShellでは、ローカルまたは検証用Supabaseプロジェクトの公開値を現在のプロセスへ設定し、Pagesと同じ生成スクリプトを実行します。
+
+```powershell
+$env:SUPABASE_URL = "https://<project-ref>.supabase.co"
+$env:SUPABASE_PUBLISHABLE_KEY = "<publishable-key>"
+$env:AUTH_CALLBACK_URL = "http://localhost:8765/auth/callback.html"
+.\.venv\Scripts\python.exe scripts\generate_auth_config.py
+.\.venv\Scripts\python.exe -m http.server 8765
+```
+
+ブラウザで `http://localhost:8765/auth/login.html` を開きます。Supabase DashboardのAuth Redirect URLsにも `http://localhost:8765/auth/callback.html` を登録してください。生成される `assets/config/auth-config.js` はGit管理外です。確認後もコミットせず、実値をREADMEやテストへ貼り付けないでください。
+
+生成スクリプトは3変数の空値、URL形式、secret/service role形式、publishable keyでない値を拒否し、JavaScript文字列を安全にエスケープします。
+
 ### データ更新
 
 ```bash
@@ -281,8 +303,11 @@ LINE通知対象は鴨池県営テニスコートとSuMIzeiテニスコートで
 | --- | --- |
 | `ENABLE_SCHEDULED_RUNS` | `true` のときだけcron実行を許可 |
 | `ENABLE_LINE_NOTIFICATIONS` | `true` のときだけ定期実行の差分通知を許可 |
+| `SUPABASE_URL` | ブラウザ公開用のSupabase Project URL |
+| `SUPABASE_PUBLISHABLE_KEY` | ブラウザ公開用のpublishable key |
+| `AUTH_CALLBACK_URL` | Supabaseに許可登録した本番callback URL |
 
-未設定または `true` 以外では安全側に倒します。定期実行自体を開始するには `ENABLE_SCHEDULED_RUNS=true`、定期LINE通知も行うには加えて `ENABLE_LINE_NOTIFICATIONS=true` が必要です。手動実行は `ENABLE_SCHEDULED_RUNS` に関係なく利用できます。
+有効化フラグが未設定または `true` 以外の場合は安全側に倒します。定期実行自体を開始するには `ENABLE_SCHEDULED_RUNS=true`、定期LINE通知も行うには加えて `ENABLE_LINE_NOTIFICATIONS=true` が必要です。手動実行は `ENABLE_SCHEDULED_RUNS` に関係なく利用できます。Pagesデプロイ時は認証用3変数がすべて必須で、空値なら設定生成を失敗させてデプロイしません。これらは公開値でありRepository SecretsではなくVariablesへ設定します。secret key、service role key、DBパスワードは登録・使用しません。
 
 ## GitHub ActionsとPages
 
@@ -295,7 +320,8 @@ Pages画面の「最終更新」は、`availability.json` 全体が生成され�
 3. `scripts/scrape.py` で全施設と通知状態を更新
 4. スナップショット、実行時JSON、`index.html`、Phase 1静的画面と共通assetsを `reservation-page-snapshots` Artifactとして常時保存
 5. dry-runでなければ意味のある2つのJSON変更だけをコミット
-6. 別ジョブがPages専用権限で `index.html`、最新JSON、Phase 1静的画面、共通assetsをデプロイ
+6. 別ジョブがRepository Variablesから `_site/assets/config/auth-config.js` を生成
+7. Pages専用権限で `index.html`、最新JSON、認証画面、法務画面、共通assetsをデプロイ
 
 取得ジョブだけが `contents: write`、Pagesジョブだけが `pages: write` と `id-token: write` を持ちます。dry-runではcommitとPagesジョブを実行しません。一部施設の取得失敗は日別のエラーとしてJSONへ記録し、他施設の処理を継続します。初回実行前に、GitHubリポジトリの `Settings` → `Pages` でSourceを `GitHub Actions` に設定してください。
 
@@ -304,17 +330,18 @@ Pages画面の「最終更新」は、`availability.json` 全体が生成され�
 ## 今後の作業
 
 1. Supabaseプロジェクト、リージョン、料金枠、環境分離を決定・作成する
-2. GitHub Pagesの本番URLと `auth/callback.html` のRedirect URLをSupabaseへ登録する
-3. メールマジックリンク、SMTP、リンク有効期限、レート制限を設定する
-4. 会員データモデル、RLS、規約同意履歴、退会処理を実装してから静的画面へ接続する
-5. 利用規約とプライバシーポリシーの暫定初版を確認し、版番号・発効日・問い合わせ先を確定する
-6. GitHub Actionsの外部ActionをコミットSHAで固定する
-7. サイト利用規約と適切なアクセス頻度を継続確認する
+2. GitHub Pagesの本番callback URLをSupabaseのRedirect URLsへ登録し、Repository Variablesを設定する
+3. メールマジックリンク、SMTP、リンク有効期限、レート制限を設定して実環境smoke testを行う
+4. 会員データモデル、`profiles`、RLS、規約同意履歴、Auth Hookを別実装する
+5. 退会Edge Functionと保持・削除方針を別実装する
+6. 利用規約とプライバシーポリシーの暫定初版を確認し、版番号・発効日・問い合わせ先を確定する
+7. GitHub Actionsの外部ActionをコミットSHAで固定する
+8. サイト利用規約と適切なアクセス頻度を継続確認する
 
 ## 注意事項
 
 - 自動予約は実装していません。
-- ログイン・会員登録画面は静的な土台のみで、Supabase API呼び出しや認証情報の保存は実装していません。
+- 会員DB、規約同意履歴、RLS、退会処理は未実装です。現在のマイページはSupabase Authセッション内のメールアドレスだけを表示します。
 - 短い間隔でのアクセスや過剰な並列実行は避けてください。
 - 予約サイトの仕様変更により取得できなくなる可能性があります。
 - `availability.json` とGitHub Pagesは公開情報として扱ってください。

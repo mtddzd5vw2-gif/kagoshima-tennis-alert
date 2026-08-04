@@ -11,6 +11,8 @@
     >
     <title>マイページ | Tennis Court Watcher</title>
     <link rel="stylesheet" href="../assets/css/auth.css">
+    <script src="../assets/config/auth-config.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.106.2/dist/umd/supabase.js"></script>
     <script src="../assets/js/auth-foundation.js" defer></script>
   </head>
   <body data-page="account">
@@ -27,33 +29,34 @@
     <main class="page-shell">
       <p class="eyebrow">My account</p>
       <h1>マイページ</h1>
-      <p class="notice">現在は静的な土台です。会員情報の取得や更新は行いません。</p>
+      <p class="notice" data-account-loading aria-live="polite">
+        ログイン状態を確認しています…
+      </p>
 
-      <div class="account-grid">
+      <div class="account-grid" data-account-content hidden>
         <section class="account-card" aria-labelledby="account-status-title">
           <h2 id="account-status-title">アカウント状態</h2>
           <dl class="definition-list">
-            <dt>会員状態</dt>
-            <dd>Supabase接続後に表示</dd>
-            <dt>メール認証</dt>
-            <dd>Supabase接続後に表示</dd>
+            <dt>ログイン状態</dt>
+            <dd>ログイン中</dd>
+            <dt>メールアドレス</dt>
+            <dd data-account-email></dd>
             <dt>同意した規約</dt>
-            <dd>同意履歴実装後に表示</dd>
+            <dd>同意履歴は準備中</dd>
           </dl>
         </section>
 
         <section class="account-card" aria-labelledby="account-actions-title">
           <h2 id="account-actions-title">アカウント操作</h2>
           <p class="muted">
-            ログアウトと退会は、セッション検証とサーバー側の安全な退会処理を
-            実装した後に有効化します。
+            ログアウトできます。退会処理はまだ準備中です。
           </p>
           <div class="button-row">
-            <button class="button button--secondary" type="button" disabled>
+            <button class="button button--secondary" type="button" data-sign-out disabled>
               ログアウト
             </button>
             <button class="button button--danger" type="button" disabled>
-              退会する
+              退会する（準備中）
             </button>
           </div>
           <p class="status-text" data-action-status aria-live="polite"></p>

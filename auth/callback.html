@@ -7,6 +7,8 @@
     <meta name="robots" content="noindex">
     <title>メール認証 | Tennis Court Watcher</title>
     <link rel="stylesheet" href="../assets/css/auth.css">
+    <script src="../assets/config/auth-config.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.106.2/dist/umd/supabase.js"></script>
     <script src="../assets/js/auth-foundation.js" defer></script>
   </head>
   <body data-page="auth-callback">
@@ -23,14 +25,12 @@
     <main class="page-shell">
       <section class="status-card" aria-labelledby="callback-title">
         <p class="eyebrow">Email authentication</p>
-        <h1 id="callback-title">メール認証の確認画面</h1>
-        <p class="notice">現在は画面の土台のみで、認証処理は実行されません。</p>
-        <p class="lead">
-          Supabase接続後、この画面でマジックリンクを安全に検証し、認証情報を
-          URLから取り除いてからマイページへ案内します。
+        <h1 id="callback-title">メール認証を確認しています</h1>
+        <p class="lead" data-callback-status aria-live="polite">
+          処理が終わるまで、この画面を閉じないでください。
         </p>
-        <div class="button-row">
-          <a class="button" href="login.html">ログイン画面へ</a>
+        <div class="button-row" data-callback-retry hidden>
+          <a class="button" href="login.html">もう一度ログインする</a>
           <a class="button button--secondary" href="../index.html">空き状況へ戻る</a>
         </div>
       </section>
