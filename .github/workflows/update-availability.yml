@@ -27,7 +27,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: tennis-availability-${{ github.ref }}
+  group: tennis-availability-writer
   cancel-in-progress: false
 
 jobs:
@@ -112,10 +112,40 @@ jobs:
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git add data/availability.json data/notification-state.json
             git commit -m "data: update tennis availability"
-            if ! git push; then
-              echo "::warning::Push was rejected, likely due to a concurrent external update. Run the workflow again."
-              exit 1
-            fi
+
+            MAX_PUSH_ATTEMPTS=3
+            for attempt in $(seq 1 "${MAX_PUSH_ATTEMPTS}"); do
+              echo "Push attempt ${attempt}/${MAX_PUSH_ATTEMPTS}."
+              if push_output="$(git push 2>&1)"; then
+                printf '%s\n' "${push_output}"
+                echo "Data update commit pushed successfully."
+                break
+              fi
+
+              printf '%s\n' "${push_output}"
+              if ! grep -Eiq 'rejected|fetch first|non-fast-forward' <<< "${push_output}"; then
+                echo "::error::Git push failed for a reason other than a concurrent update; not retrying."
+                exit 1
+              fi
+
+              if [[ "${attempt}" -eq "${MAX_PUSH_ATTEMPTS}" ]]; then
+                echo "::error::Git push was rejected after ${MAX_PUSH_ATTEMPTS} attempts."
+                exit 1
+              fi
+
+              echo "::warning::Push was rejected by a concurrent update; rebasing the existing data commit onto origin/main."
+              if ! git fetch origin main; then
+                echo "::error::Failed to fetch origin/main before retrying the push."
+                exit 1
+              fi
+              if ! git rebase origin/main; then
+                git rebase --abort || true
+                echo "::error::Rebase onto origin/main conflicted. The rebase was aborted; data files were not overwritten."
+                exit 1
+              fi
+
+              sleep 2
+            done
           fi
 
   deploy-pages:
