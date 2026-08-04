@@ -128,7 +128,14 @@ jobs:
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
+    env:
+      SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+      SUPABASE_PUBLISHABLE_KEY: ${{ vars.SUPABASE_PUBLISHABLE_KEY }}
+      AUTH_CALLBACK_URL: ${{ vars.AUTH_CALLBACK_URL }}
     steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
       - name: Download run artifact
         uses: actions/download-artifact@v4
         with:
@@ -148,6 +155,11 @@ jobs:
           cp -R run-artifact/account _site/account
           cp -R run-artifact/legal _site/legal
           cp -R run-artifact/assets _site/assets
+
+      - name: Generate public authentication configuration
+        run: >-
+          python scripts/generate_auth_config.py
+          --output _site/assets/config/auth-config.js
 
       - name: Upload GitHub Pages artifact
         uses: actions/upload-pages-artifact@v3

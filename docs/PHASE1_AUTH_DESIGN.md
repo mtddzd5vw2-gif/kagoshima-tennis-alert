@@ -5,7 +5,7 @@
 | 項目 | 内容 |
 | --- | --- |
 | 対象 | Tennis Court Watcher Phase 1 会員基盤 |
-| 状態 | 方針決定済み・静的フロントエンド基盤実装中。未確定事項は「**要決定**」と記載する |
+| 状態 | Supabase Authマジックリンク・PKCEフロントエンド実装済み。会員DB等の未確定事項は「**要決定**」と記載する |
 | 作成日 | 2026-08-04 |
 | 方針決定日 | 2026-08-04 |
 | 前提文書 | [Project Vision](./PROJECT_VISION.md)、[Development Roadmap](./DEVELOPMENT_ROADMAP.md)、[Service Specification](./SERVICE_SPECIFICATION.md) |
@@ -18,7 +18,10 @@
 | --- | --- | --- |
 | 会員基盤 | Supabase Auth/PostgreSQLを正式採用する | 2026-08-04 |
 | 認証方式 | メールのマジックリンクを使用し、パスワード認証はPhase 1で使用しない | 2026-08-04 |
+| トークン交換 | PKCEを採用し、callbackでcodeをセッションへ交換する | 2026-08-04 |
 | ホスティング | GitHub Pagesを継続する | 2026-08-04 |
+| ブラウザSDK | `@supabase/supabase-js@2.106.2` に固定する | 2026-08-04 |
+| 公開設定 | GitHub Actions Repository Variablesの3値からPagesデプロイ時に生成する | 2026-08-04 |
 | 法務ページ | 会員登録の一般公開前に利用規約とプライバシーポリシーの暫定初版を作成し、内容確認を完了する | 2026-08-04 |
 | Phase 1範囲 | 利用規約同意、会員登録、メール認証、ログイン、ログアウト、最小限のマイページ、退会に限定する | 2026-08-04 |
 | Phase 1対象外 | 通知条件、利用者別通知、LINE連携、課金は実装しない | 2026-08-04 |
@@ -33,10 +36,10 @@
 - `scripts/scrape.py` はPython/Playwrightで鹿児島市の3施設を取得し、公開用 `data/availability.json` と既存LINE通知用 `data/notification-state.json` を生成する。
 - 既存LINE通知は `LINE_CHANNEL_ACCESS_TOKEN` と単一の `LINE_USER_ID` をGitHub Actions Secretsから受け取る。これは利用者別通知ではない。
 - `.github/workflows/update-availability.yml` はpytest、スクレイピング、診断Artifact、2つのJSONの更新、GitHub Pagesデプロイを行う。
-- Pagesのデプロイ対象は現在、`index.html` と `data/availability.json` だけである。
-- `tests/` はスクレイピング、DOM変更・403時の障害分離、秘密情報のマスク、差分LINE通知、Pages表示、モバイル表示、workflowの安全な実行条件を検証している。
-- フロントエンド用のパッケージ管理・ビルド処理、認証バックエンド、会員データベースはまだ存在しない。
-- 現在の `.gitignore` は `.env` 系ファイルを除外していない。実装開始前に追加が必要である。
+- Pagesは既存トップと公開JSONに加え、`auth`、`account`、`legal`、`assets` を同じArtifactから配信する。
+- `tests/` はPhase 0回帰に加え、公開設定生成、必須変数、秘密鍵拒否、マジックリンク送信、PKCE callback、セッション確認、ログアウト、console非露出を検証する。
+- Supabase Authのブラウザ接続は実装済みだが、会員データベース、`profiles`、RLS、規約同意履歴、Auth Hook、退会Edge Function、通知設定はまだ存在しない。
+- `.gitignore` は `.env` 系、`assets/config/auth-config.js`、secret候補ファイル、Supabase CLI一時状態を除外する。
 
 ### 1.2 Phase 1で守る境界
 
@@ -55,7 +58,7 @@ Phase 1は次を不変条件とする。
 - サーバー側レンダリング、任意のAPI処理、HTTP-only Cookieの発行はGitHub Pages単体では行えない。
 - GitHub Pagesのプロジェクトサイトでは、公開URLにリポジトリ名のベースパスが入る可能性がある。サイト内リンクを `/auth/login.html` のようなドメインルート固定にせず、相対URLで記述する。
 - 保護ページのHTML/JavaScript自体は誰でも取得できる。「画面を隠すこと」を認可にせず、データ取得時のRLSを最終的な認可境界にする。
-- ブラウザ実行のためセッションはJavaScriptから利用可能なストレージに保持される。XSS対策、依存関係固定、認証画面からの第三者スクリプト排除が必須である。HTTP-only Cookieを必須要件とする場合はGitHub Pagesのみの構成では満たせず、ホスティング構成を再検討する必要があるため**要決定**とする。
+- ブラウザ実行のためセッションはJavaScriptから利用可能なストレージに保持される。XSS対策と依存関係固定が必須である。認証画面から読み込む外部スクリプトは、固定バージョンのSupabase公式配布パッケージに限定し、広告・分析・未知の第三者スクリプトを置かない。HTTP-only Cookieを必須要件とする場合はGitHub Pagesのみの構成では満たせず、ホスティング構成を再検討する必要があるため**要決定**とする。
 - GitHub Pagesでは任意のレスポンスヘッダーを設定できない。CSPはHTMLの `meta` で可能な範囲を適用するが、`frame-ancestors` などレスポンスヘッダーが必要な対策をどう補うかは**要決定**である。
 
 ## 2. Phase 1の対象機能
@@ -72,6 +75,15 @@ Phase 1は次を不変条件とする。
 | 退会 | 本人確認後に会員を即時ロックし、サーバー側の特権処理でAuthユーザーと個人情報を削除または規定に従って匿名化する |
 
 パスワード認証とパスワード再設定はPhase 1の対象外とする。表示名、メールアドレス変更、全端末ログアウトをPhase 1へ含めるかは**要決定**である。
+
+### 2.1 今回実装した境界
+
+- ログイン画面でメール形式と利用規約同意を確認し、条件成立時だけ `signInWithOtp` を実行する。
+- callbackでURLの `code` を読み、直ちに認証パラメータを消去して `exchangeCodeForSession` を実行する。
+- マイページは `getSession` で未認証者をログイン画面へ戻し、Authセッションのメールアドレスだけを表示する。
+- `signOut` でローカルを含む現在のセッションを終了する。
+- 成功・失敗表示はアカウントの存在を区別せず、メールアドレス、認証URL、code、access token、refresh tokenをconsoleへ出さない。
+- 規約同意のDB記録、profileの状態判定、RLS、退会は今回の実装境界外である。
 
 ## 3. Phase 1の対象外
 
@@ -154,10 +166,12 @@ flowchart LR
 
 1. 現行どおり `_site/index.html` と `_site/data/availability.json` を生成する。
 2. Phase 1の静的成果物を `_site/auth/`、`_site/account/`、`_site/legal/`、`_site/assets/` へ追加する。
-3. 実接続時に、公開設定ファイルをGitHub Actions Repository Variablesから生成する。
-4. Artifact内に既存トップ、公開JSON、Phase 1画面がすべて存在することをテストしてから、現行のPagesジョブでまとめてデプロイする。
+3. Pagesジョブで `SUPABASE_URL`、`SUPABASE_PUBLISHABLE_KEY`、`AUTH_CALLBACK_URL` をRepository Variablesから受け取る。
+4. `scripts/generate_auth_config.py` で `_site/assets/config/auth-config.js` を生成する。空値、HTTP(S)以外のURL、secret/service role形式、publishable keyでない値は拒否し、文字列はJavaScript向けに安全にエスケープする。
+5. 3変数のいずれかが不正ならPagesデプロイを失敗させ、認証設定の欠けた成果物を公開しない。
+6. Artifact内に既存トップ、公開JSON、Phase 1画面がすべて存在することをテストしてから、現行のPagesジョブでまとめてデプロイする。
 
-会員画面のビルド失敗時に古いPages公開まで停止するか、会員機能だけを無効化してPhase 0を公開するかは**要決定**とする。推奨は、会員機能を機能フラグで無効化でき、Phase 0だけを再デプロイできることとする。
+認証設定不足時も取得・既存LINE通知・診断Artifactまでは継続するが、Pagesデプロイは失敗する。既存の公開済みPagesは新Artifactへ置き換わらない。
 
 ### 5.3 URLとセッション
 
@@ -165,7 +179,7 @@ flowchart LR
 - callbackは許可済みの固定パスだけを使い、クエリから任意の遷移先を受け取らない。
 - 認証コード、token hash、エラー情報を処理した直後に `history.replaceState` でURLから除去し、画面・console・分析基盤へ渡さない。
 - 認証ページでは `Referrer-Policy: no-referrer` 相当を適用し、認証処理中のURLを外部へ送らない。
-- 認証方式はメールのマジックリンクとする。マジックリンクのトークン交換方式としてPKCEを採用するか、別端末でリンクを開く利用者体験をどう扱うかは**要決定**である。
+- 認証方式はメールのマジックリンク、トークン交換はPKCEとする。code verifierはリンク要求元ブラウザのストレージにあるため、原則として同じブラウザでリンクを開く必要がある。別端末・別ブラウザで失敗した場合は、利用するブラウザから再度リンクを要求するよう案内する。
 - access tokenとrefresh tokenをURL fragmentへ露出させるimplicit flowは採用候補から除外する。
 - 認証URL、access token、refresh token、PKCE verifier、認証コードをログへ出さない。URL全体をエラー監視へ送る設定も禁止する。
 
@@ -191,6 +205,8 @@ flowchart LR
 │   ├── css/auth.css
 │   ├── js/auth-foundation.js
 │   └── config/auth-config.example.js
+├── scripts/
+│   └── generate_auth_config.py        # ローカル・Pages共通の公開設定生成
 ├── supabase/
 │   ├── config.toml
 │   ├── migrations/
@@ -209,7 +225,7 @@ flowchart LR
 └── docs/PHASE1_AUTH_DESIGN.md
 ```
 
-今回の静的基盤にはSupabase JavaScript SDKを追加しない。実接続時はSDKのバージョンを固定し、認証画面で未固定CDNスクリプトを実行しない。ビルド成果物をコミットするかActions内だけで生成するかは**要決定**だが、どちらでも再現可能な固定バージョンを使う。
+ブラウザSDKはSupabase公式ドキュメントで案内されるjsDelivr配布の `@supabase/supabase-js@2.106.2/dist/umd/supabase.js` に固定する。`@2` や `latest` のような可変指定は使わない。公開設定だけをデプロイ時に生成し、SDKやProject設定にsecret/service role keyを渡さない。
 
 ## 7. 画面とURLの構成
 
@@ -227,6 +243,8 @@ flowchart LR
 未認証者が `account/index.html` を開いた場合は、保護情報を描画せずログインへ遷移する。遷移先を保持する場合も、サイト内の許可済みパスだけを識別子で指定し、外部URLを受け付けない。
 
 ## 8. 会員登録からメール認証完了までのシーケンス
+
+次図は会員DB、Auth Hook、同意履歴まで含む将来のPhase 1完成形である。今回実装したのは `signInWithOtp`、認証メール、PKCE code交換、Authセッション、マイページ遷移の経路だけであり、`H` と `D` の処理は未実装である。
 
 ```mermaid
 sequenceDiagram
@@ -481,7 +499,7 @@ using (
 | ローカルSecret | ローカルDB接続、CLI token、テスト用秘密値 | `.env.local` 等のGit管理外ファイル |
 | 公開・固定設定 | 規約版、公開法務ページ、スキーマ、RLS migration | Git |
 
-実装開始時に `.gitignore` へ少なくとも次の方針を追加する。
+`.gitignore` は次の方針を実装済みである。
 
 ```gitignore
 .env
@@ -491,7 +509,18 @@ assets/config/auth-config.js
 supabase/.temp/
 ```
 
-`assets/config/auth-config.example.js` にはSupabase URL、ブラウザ公開用キー、Auth callback URLの項目と空値だけを置く。実値をコピーしない。公開設定とSecretを同じ変数名やファイルで扱わず、レビュー時に区別できるようにする。
+`assets/config/auth-config.example.js` にはSupabase URL、ブラウザ公開用キー、Auth callback URLの項目と空値だけを置く。実値をコピーしない。実値を持つ `assets/config/auth-config.js` は常にGit管理外とする。
+
+ローカルとPagesは同じ生成処理を使う。
+
+```bash
+SUPABASE_URL="https://<project-ref>.supabase.co" \
+SUPABASE_PUBLISHABLE_KEY="<publishable-key>" \
+AUTH_CALLBACK_URL="http://localhost:8765/auth/callback.html" \
+python scripts/generate_auth_config.py
+```
+
+Pagesジョブは出力先だけを `--output _site/assets/config/auth-config.js` に変更する。生成処理は期待する3変数以外のsecretを読まず、値をログへ出さない。
 
 開発・ステージング・本番ごとにSupabaseプロジェクトとcallback URLを分ける案を推奨する。本番の設定をpull requestのpreviewへ配布しない。
 
@@ -547,12 +576,15 @@ supabase/.temp/
 
 ### 19.1 単体テスト
 
+- 公開設定の安全なエスケープ、必須変数不足時の失敗、secret/service role/非公開キー形式の拒否
 - 入力検証、規約同意チェック、送信中の二重送信防止
 - URLベースパス生成とサイト内redirect allowlist
 - SDKエラーから一般化した画面メッセージへの変換
 - callbackの成功・期限切れ・改変・使用済み・code不足
 - 認証情報をURLとログから除去する処理
 - マイページで本人情報だけを表示する処理
+
+上記のうち公開設定、入力・同意、二重送信、一般化メッセージ、PKCE callback、URL消去、Authセッションのメール表示、ログアウト、console非露出はPlaywrightとpytestで実装済みである。DB・RLS、実メール、期限切れ・二回使用などSupabase実環境が必要な項目は未実装である。
 
 ### 19.2 DB・RLSテスト
 
@@ -610,11 +642,11 @@ supabase/.temp/
 
 ### Step 0: 要決定事項のうち実装前提を確定
 
-Supabase採用、メールのマジックリンク認証、GitHub Pages継続、Phase 1の機能境界は2026-08-04に決定済みである。環境分離、Pages本番URL、マジックリンクのトークン交換方式、規約・プライバシー本文、退会保持方針は引き続き決定し、必要ならADRへ記録する。
+Supabase採用、メールのマジックリンク認証、GitHub Pages継続、PKCE、Phase 1の機能境界は2026-08-04に決定済みである。環境分離、Pages本番URL、規約・プライバシー本文、退会保持方針は引き続き決定し、必要ならADRへ記録する。
 
 ### Step 1: Phase 0を保護する配信・設定の土台
 
-会員画面用の独立ディレクトリ、固定依存関係、公開設定テンプレート、`.env`除外、会員機能フラグ、Pages Artifact構成テストを追加する。既存トップとスクレイパーは変更しない。
+**実装済み。** 会員画面用の独立ディレクトリ、固定SDK、公開設定テンプレートと生成処理、`.env`除外、Pages Artifact構成テストを追加した。既存トップとスクレイパーは変更していない。
 
 ### Step 2: Supabaseローカル環境とDB migration
 
@@ -626,15 +658,15 @@ Supabase採用、メールのマジックリンク認証、GitHub Pages継続、
 
 ### Step 4: 会員登録と同意記録
 
-登録・ログイン共通画面、入力検証、明示同意、Auth `signInWithOtp`、Hook/trigger、一貫性、一般化したエラー、レート制限を実装する。
+**ブラウザ部分を実装済み。** 登録・ログイン共通画面、入力検証、明示同意、Auth `signInWithOtp`、一般化した表示を実装した。Hook/trigger、同意記録、レート制限の運用設定は未実装である。
 
 ### Step 5: メール認証
 
-独自SMTP、固定callback、認証待ち、再送、callback、期限切れ・無効時の導線、URL消去を実装する。
+**ブラウザ部分を実装済み。** 固定callback、PKCE code交換、失敗時の再ログイン導線、URL消去を実装した。独自SMTP、専用の再送UI、期限とレート制限の運用設定は未実装である。
 
 ### Step 6: ログイン・ログアウト・マイページ
 
-ログイン、各保護画面のroute guard、本人profileと同意履歴の表示、ログアウトを実装する。未認証・非active会員のデータを描画しない。
+**Authセッション部分を実装済み。** `getSession` によるroute guard、Authセッションのメールアドレス表示、`signOut` を実装した。本人profile、active状態、同意履歴は未実装である。
 
 ### Step 7: 退会
 
@@ -677,7 +709,6 @@ E2E、RLS、漏えい検査、アクセシビリティ、Phase 0回帰、バッ�
 
 ### 認証・セッション
 
-- マジックリンクのトークン交換にPKCEを採用する場合の同一ブラウザ・端末制約と、別端末でリンクを開いた場合の案内
 - JavaScriptから利用可能なセッションストレージのXSSリスク受容可否
 - メールアドレス変更、全端末ログアウト、セッション期間、JWT有効期限
 - CAPTCHA、登録・ログイン・再送・退会のレート制限値
