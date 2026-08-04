@@ -6,7 +6,7 @@
     "sumizei",
     "toukai-tennis"
   ],
-  "updated_at": "2026-08-03T14:08:28+09:00",
+  "updated_at": "2026-08-04T15:53:50+09:00",
   "observed_slot_ids": [
     "02dd69e01d8386fa2bfc7afa",
     "0aa5659252b619edd72d2d75",
@@ -39,6 +39,7 @@
     "6a096896ad4582739e5555b7",
     "6fecd3772cba41b2a6e408e5",
     "7472a534467cfb1ccb3efd28",
+    "75a3f82ec7ecb8d3c383ca07",
     "807d1f6231c1c1db99e69c48",
     "80bb2865c0798a0952817ad4",
     "8274852345a42815a65fad09",
@@ -74,8 +75,6 @@
     "eda72d3e0bd479d20b4194c4",
     "ef9413fda384e644b39d514e",
     "f04374d302148b7e940b6ce6",
-    "f44bc047e2f7d2bee30b2acf",
-    "f478130b4868b482e56fdb83",
     "f858ab05c42559d56d130a1c",
     "fb2f0bc455bc9e75beb8d1f7",
     "fcbcad7d31cb62f7f4d23cc3",
@@ -114,6 +113,7 @@
     "6a096896ad4582739e5555b7": "kamoike-prefectural|2026-08-11",
     "6fecd3772cba41b2a6e408e5": "kamoike-prefectural|2026-08-08",
     "7472a534467cfb1ccb3efd28": "kamoike-prefectural|2026-08-08",
+    "75a3f82ec7ecb8d3c383ca07": "kamoike-prefectural|2026-08-09",
     "807d1f6231c1c1db99e69c48": "kamoike-prefectural|2026-08-09",
     "80bb2865c0798a0952817ad4": "sumizei|2026-08-16",
     "8274852345a42815a65fad09": "kamoike-prefectural|2026-08-08",
@@ -149,13 +149,11 @@
     "eda72d3e0bd479d20b4194c4": "kamoike-prefectural|2026-08-16",
     "ef9413fda384e644b39d514e": "kamoike-prefectural|2026-08-15",
     "f04374d302148b7e940b6ce6": "toukai-tennis|2026-08-15",
-    "f44bc047e2f7d2bee30b2acf": "kamoike-prefectural|2026-08-09",
-    "f478130b4868b482e56fdb83": "sumizei|2026-08-09",
     "f858ab05c42559d56d130a1c": "kamoike-prefectural|2026-08-15",
     "fb2f0bc455bc9e75beb8d1f7": "kamoike-prefectural|2026-08-08",
     "fcbcad7d31cb62f7f4d23cc3": "kamoike-prefectural|2026-08-09",
     "fdfd4801cd05bf366087ee21": "kamoike-prefectural|2026-08-15",
     "ffcfa7e014e9b239f925b382": "kamoike-prefectural|2026-08-15"
   },
-  "last_notification_status": "no_new_slots"
+  "last_notification_status": "notification_suppressed_baseline_advanced"
 }
