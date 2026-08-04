@@ -5,6 +5,12 @@
 > [!IMPORTANT]
 > 鴨池県営テニスコート、SuMIzeiテニスコート、東開庭球場は、いずれも認証不要の実画面に対応済みです。自動予約、ログイン、利用者ID・パスワードの使用や保存は行いません。
 
+## Documentation
+
+- [Project Vision](docs/PROJECT_VISION.md)
+- [Development Roadmap](docs/DEVELOPMENT_ROADMAP.md)
+- [Service Specification](docs/SERVICE_SPECIFICATION.md)
+
 ## 現在の機能
 
 - 今日を含む直近15日間から土曜日、日曜日、日本の祝日を抽出
