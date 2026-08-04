@@ -10,6 +10,7 @@
 - [Project Vision](docs/PROJECT_VISION.md)
 - [Development Roadmap](docs/DEVELOPMENT_ROADMAP.md)
 - [Service Specification](docs/SERVICE_SPECIFICATION.md)
+- [Phase 1 Auth Design](docs/PHASE1_AUTH_DESIGN.md)
 
 ## 現在の機能
 
