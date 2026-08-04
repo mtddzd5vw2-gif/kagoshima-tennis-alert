@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="referrer" content="no-referrer">
+    <meta
+      name="description"
+      content="Tennis Court Watcherのメールマジックリンクによるログイン・会員登録画面です。"
+    >
+    <title>ログイン・会員登録 | Tennis Court Watcher</title>
+    <link rel="stylesheet" href="../assets/css/auth.css">
+    <script src="../assets/js/auth-foundation.js" defer></script>
+  </head>
+  <body data-page="auth-login">
+    <header class="site-header">
+      <div class="site-header__inner">
+        <a class="brand" href="../index.html">Tennis Court Watcher</a>
+        <nav class="top-nav" aria-label="主要ナビゲーション">
+          <a href="../index.html">空き状況</a>
+          <a href="../legal/terms.html">利用規約</a>
+          <a href="../legal/privacy.html">プライバシー</a>
+        </nav>
+      </div>
+    </header>
+
+    <main class="page-shell">
+      <div class="auth-layout">
+        <section aria-labelledby="page-title">
+          <p class="eyebrow">Phase 1 foundation</p>
+          <h1 id="page-title">メールで、安全にログイン</h1>
+          <p class="lead">
+            パスワードを使わず、入力したメールアドレスへ届くマジックリンクから
+            ログインします。初回利用時は同じ流れで会員登録を行います。
+          </p>
+          <ul class="feature-list">
+            <li>利用規約への同意を確認してから登録</li>
+            <li>メールアドレスの確認とログインを一つのリンクで実施</li>
+            <li>通知条件やLINE連携、課金はこのPhaseでは扱いません</li>
+          </ul>
+        </section>
+
+        <section class="panel" aria-labelledby="form-title">
+          <p class="notice">現在は画面の土台のみです。メール送信や会員登録は行いません。</p>
+          <h2 id="form-title">マジックリンクを受け取る</h2>
+          <form data-auth-foundation-form>
+            <div class="field">
+              <label for="email">メールアドレス</label>
+              <input
+                id="email"
+                name="email"
+                type="email"
+                autocomplete="email"
+                inputmode="email"
+                placeholder="name@example.com"
+                required
+              >
+            </div>
+            <label class="consent" for="terms-consent">
+              <input id="terms-consent" name="terms-consent" type="checkbox">
+              <span>
+                初めて登録する場合は、
+                <a href="../legal/terms.html">利用規約（暫定案）</a>と
+                <a href="../legal/privacy.html">プライバシーポリシー（暫定案）</a>
+                を確認し、利用規約に同意します。
+              </span>
+            </label>
+            <button class="button" type="submit" disabled aria-describedby="form-note">
+              マジックリンクを送る
+            </button>
+            <p id="form-note" class="form-note">
+              Supabase未接続のため送信ボタンは無効です。
+            </p>
+            <p class="status-text" data-form-status aria-live="polite"></p>
+          </form>
+        </section>
+      </div>
+    </main>
+
+    <footer class="site-footer">
+      <div class="site-footer__inner">
+        <span>© Tennis Court Watcher</span>
+        <nav class="footer-links" aria-label="フッターナビゲーション">
+          <a href="../index.html">空き状況へ戻る</a>
+          <a href="../legal/terms.html">利用規約</a>
+          <a href="../legal/privacy.html">プライバシーポリシー</a>
+        </nav>
+      </div>
+    </footer>
+  </body>
+</html>

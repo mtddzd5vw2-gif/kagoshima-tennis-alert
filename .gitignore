@@ -5,3 +5,30 @@ __pycache__/
 snapshots/
 run-output/
 _site/
+
+# Local environment and authentication configuration
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.local.config.*
+config.local.*
+assets/config/auth-config.js
+assets/config/*.local.js
+!assets/config/*.example.js
+
+# Files that may contain authentication tokens or private keys
+*.pem
+*.key
+*.p12
+*.pfx
+credentials*.json
+secrets*.json
+tokens*.json
+*access-token*.txt
+*access_token*.txt
+*service-role*.json
+*service_role*.json
+
+# Supabase CLI local state
+supabase/.temp/

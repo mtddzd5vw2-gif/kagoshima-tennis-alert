@@ -28,16 +28,51 @@
 - 空きなしの正常取得日は初期状態で折りたたみ、施設ごとに表示を切り替え
 - 成功・失敗を問わず診断用HTMLとPNGを保存
 - pytest、GitHub Actions、Pages自動配信
+- Phase 1の認証用静的画面（ログイン・会員登録、認証callback、マイページ、利用規約、プライバシーポリシー）
+- 共通の認証画面CSS・JavaScriptと、秘密情報を含まないSupabase公開設定サンプル
 
 空き状況は候補です。予約前に必ず公式サイトで最新情報を確認してください。
+
+## Phase 1 認証プロジェクト基盤
+
+2026-08-04時点で、Supabase Auth/PostgreSQL、メールのマジックリンク認証、GitHub Pages継続を正式方針としました。Phase 1は利用規約同意、会員登録、メール認証、ログイン、ログアウト、最小限のマイページ、退会だけを対象とします。通知条件、利用者別通知、LINE連携、課金は対象外です。
+
+現在は安全な静的フロントエンドの土台まで実装済みです。Supabase SDK、API呼び出し、メール送信、セッション処理、会員データの取得・更新、退会処理はまだ実装していません。ログイン画面の送信ボタンとマイページの操作ボタンは、誤って外部処理を開始しないよう無効にしています。
+
+追加した画面は次のとおりです。すべてGitHub Pagesのリポジトリ配下で動く相対リンクを使用します。
+
+- `auth/login.html`: マジックリンクによるログイン・会員登録画面
+- `auth/callback.html`: メール認証callback画面
+- `account/index.html`: 最小限のマイページ
+- `legal/terms.html`: 利用規約の暫定案
+- `legal/privacy.html`: プライバシーポリシーの暫定案
+
+法務ページは暫定案であり、会員登録の一般公開前に運営者表示、問い合わせ窓口、版番号、発効日、保持・削除方針などの内容確認が必要です。詳細と未決事項は[Phase 1 Auth Design](docs/PHASE1_AUTH_DESIGN.md)を参照してください。
 
 ## ファイル構成
 
 ```text
 .
 ├── .github/workflows/update-availability.yml
+├── account/
+│   └── index.html
+├── assets/
+│   ├── config/auth-config.example.js
+│   ├── css/auth.css
+│   └── js/auth-foundation.js
+├── auth/
+│   ├── callback.html
+│   └── login.html
 ├── data/availability.json
 ├── data/notification-state.json
+├── docs/
+│   ├── DEVELOPMENT_ROADMAP.md
+│   ├── PHASE1_AUTH_DESIGN.md
+│   ├── PROJECT_VISION.md
+│   └── SERVICE_SPECIFICATION.md
+├── legal/
+│   ├── privacy.html
+│   └── terms.html
 ├── scripts/
 │   ├── __init__.py
 │   └── scrape.py
@@ -45,7 +80,9 @@
 │   ├── fixtures/kamoike_schedule.html
 │   ├── fixtures/sumizei_schedule.html
 │   ├── fixtures/toukai_schedule.html
+│   ├── test_auth_foundation.py
 │   ├── test_notifications.py
+│   ├── test_page.py
 │   └── test_scrape.py
 ├── index.html
 ├── requirements.txt
@@ -256,9 +293,9 @@ Pages画面の「最終更新」は、`availability.json` 全体が生成され�
 1. 固定済み依存関係とChromiumをセットアップ
 2. pytestを実行
 3. `scripts/scrape.py` で全施設と通知状態を更新
-4. スナップショット、実行時JSON、`index.html` を `reservation-page-snapshots` Artifactとして常時保存
+4. スナップショット、実行時JSON、`index.html`、Phase 1静的画面と共通assetsを `reservation-page-snapshots` Artifactとして常時保存
 5. dry-runでなければ意味のある2つのJSON変更だけをコミット
-6. 別ジョブがPages専用権限で `index.html` と最新JSONをデプロイ
+6. 別ジョブがPages専用権限で `index.html`、最新JSON、Phase 1静的画面、共通assetsをデプロイ
 
 取得ジョブだけが `contents: write`、Pagesジョブだけが `pages: write` と `id-token: write` を持ちます。dry-runではcommitとPagesジョブを実行しません。一部施設の取得失敗は日別のエラーとしてJSONへ記録し、他施設の処理を継続します。初回実行前に、GitHubリポジトリの `Settings` → `Pages` でSourceを `GitHub Actions` に設定してください。
 
@@ -266,13 +303,18 @@ Pages画面の「最終更新」は、`availability.json` 全体が生成され�
 
 ## 今後の作業
 
-1. GitHub Actionsの外部ActionをコミットSHAで固定する
-2. サイト利用規約と適切なアクセス頻度を継続確認する
+1. Supabaseプロジェクト、リージョン、料金枠、環境分離を決定・作成する
+2. GitHub Pagesの本番URLと `auth/callback.html` のRedirect URLをSupabaseへ登録する
+3. メールマジックリンク、SMTP、リンク有効期限、レート制限を設定する
+4. 会員データモデル、RLS、規約同意履歴、退会処理を実装してから静的画面へ接続する
+5. 利用規約とプライバシーポリシーの暫定初版を確認し、版番号・発効日・問い合わせ先を確定する
+6. GitHub Actionsの外部ActionをコミットSHAで固定する
+7. サイト利用規約と適切なアクセス頻度を継続確認する
 
 ## 注意事項
 
 - 自動予約は実装していません。
-- ログイン処理や認証情報の保存は実装していません。
+- ログイン・会員登録画面は静的な土台のみで、Supabase API呼び出しや認証情報の保存は実装していません。
 - 短い間隔でのアクセスや過剰な並列実行は避けてください。
 - 予約サイトの仕様変更により取得できなくなる可能性があります。
 - `availability.json` とGitHub Pagesは公開情報として扱ってください。

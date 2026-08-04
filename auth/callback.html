@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="referrer" content="no-referrer">
+    <meta name="robots" content="noindex">
+    <title>メール認証 | Tennis Court Watcher</title>
+    <link rel="stylesheet" href="../assets/css/auth.css">
+    <script src="../assets/js/auth-foundation.js" defer></script>
+  </head>
+  <body data-page="auth-callback">
+    <header class="site-header">
+      <div class="site-header__inner">
+        <a class="brand" href="../index.html">Tennis Court Watcher</a>
+        <nav class="top-nav" aria-label="主要ナビゲーション">
+          <a href="../index.html">空き状況</a>
+          <a href="login.html">ログイン</a>
+        </nav>
+      </div>
+    </header>
+
+    <main class="page-shell">
+      <section class="status-card" aria-labelledby="callback-title">
+        <p class="eyebrow">Email authentication</p>
+        <h1 id="callback-title">メール認証の確認画面</h1>
+        <p class="notice">現在は画面の土台のみで、認証処理は実行されません。</p>
+        <p class="lead">
+          Supabase接続後、この画面でマジックリンクを安全に検証し、認証情報を
+          URLから取り除いてからマイページへ案内します。
+        </p>
+        <div class="button-row">
+          <a class="button" href="login.html">ログイン画面へ</a>
+          <a class="button button--secondary" href="../index.html">空き状況へ戻る</a>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="site-footer__inner">
+        <span>© Tennis Court Watcher</span>
+        <nav class="footer-links" aria-label="フッターナビゲーション">
+          <a href="../legal/terms.html">利用規約</a>
+          <a href="../legal/privacy.html">プライバシーポリシー</a>
+        </nav>
+      </div>
+    </footer>
+  </body>
+</html>
