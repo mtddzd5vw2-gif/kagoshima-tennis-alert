@@ -38,11 +38,13 @@
 
 2026-08-04時点で、Supabase Auth、メールのマジックリンク認証、GitHub Pages、PKCEを正式方針としました。ブラウザは固定版 `@supabase/supabase-js@2.106.2` を使用し、公開Project URLとpublishable keyだけで接続します。`flowType: "pkce"`、`persistSession: true`、`autoRefreshToken: true` を明示しています。
 
-実装済みの範囲は、メール形式・利用規約同意の確認、`signInWithOtp` によるマジックリンク送信、codeの `exchangeCodeForSession`、認証URLの消去、`getSession` によるマイページ保護、ログイン中メールアドレス表示、`signOut` です。成功・失敗文言からアカウントの存在有無を推測しにくくし、メールアドレス・code・token・認証URLをconsoleへ出しません。
+実装済みの範囲は、メール形式・利用規約同意の確認、`signInWithOtp` によるマジックリンク送信、codeの `exchangeCodeForSession`、認証URLの消去、`getSession` によるマイページ保護、会員profileと規約同意履歴の本人表示、現行規約への同意、`signOut` です。成功・失敗文言からアカウントの存在有無を推測しにくくし、メールアドレス・code・token・認証URLをconsoleへ出しません。
 
 PKCEのcode verifierはリンクを要求したブラウザ側に保存されるため、マジックリンクは原則としてログイン操作を開始した同じブラウザで開く必要があります。別端末・別ブラウザで開いて認証に失敗した場合は、利用するブラウザでログイン画面から再送してください。
 
-今回は会員DB、`profiles`、RLS、規約同意履歴、Auth Hook、退会Edge Function、通知設定を実装していません。利用規約同意は送信前のUI確認のみで、履歴保存ではありません。退会ボタンは準備中のままです。
+`supabase/migrations/20260804000000_create_member_profiles.sql` に `legal_document_versions`、`profiles`、`terms_acceptances`、新規Authユーザー用trigger、既存ユーザーbackfill、RLS、最小権限Grant、引数なしの `accept_current_terms()` RPCを実装しています。`20260806000000_fix_accept_current_terms_conflict.sql` は、適用済みの関数を制約名指定の `ON CONFLICT` へ置き換えます。ブラウザから会員データを直接変更する権限はなく、同意登録だけをRPCへ集約します。退会Edge Function、通知設定、LINE連携、課金は未実装で、退会ボタンは準備中のままです。
+
+開発用の現行規約版は `2026-08-04-draft` です。一般公開前に正式な規約本文・版番号・発効日へ更新し、開発用版への同意済み利用者にも正式版への再同意を求めてください。
 
 追加した画面は次のとおりです。すべてGitHub Pagesのリポジトリ配下で動く相対リンクを使用します。
 
@@ -241,6 +243,25 @@ $env:AUTH_CALLBACK_URL = "http://localhost:8765/auth/callback.html"
 
 生成スクリプトは3変数の空値、URL形式、secret/service role形式、publishable keyでない値を拒否し、JavaScript文字列を安全にエスケープします。
 
+### Supabase migrationの適用
+
+このリポジトリはmigrationを自動適用しません。migrationは次の順序で適用します。
+
+1. `supabase/migrations/20260804000000_create_member_profiles.sql`
+2. `supabase/migrations/20260806000000_fix_accept_current_terms_conflict.sql`
+
+現在の開発Supabaseには第1migrationが適用済みです。第1migrationを再実行せず、DashboardのSQL Editorで第2migrationの全文を新しいqueryへ貼り付け、1回だけ実行してください。新規環境では第1、第2の順でそれぞれ1回実行します。
+
+第2migrationの実行後はTable Editorで変更せず、SQL Editorで次を確認してください。
+
+1. `legal_document_versions` に `terms / 2026-08-04-draft / is_current=true` が1件ある。
+2. 既存の `auth.users` ごとに `profiles` があり、`membership_status=pending_terms` である。
+3. 既存ユーザー向けの `terms_acceptances` は自動生成されていない。
+4. 新しい開発用ユーザーでマジックリンクを開き、同意後にprofileが `active` となり、同意履歴が1件追加される。
+5. 同じ規約への再同意で履歴が重複しない。
+
+SQL Editorへ貼り付ける前に、プロジェクト名と環境を再確認してください。service role key、secret key、DBパスワードはこの手順では使用しません。
+
 ### データ更新
 
 ```bash
@@ -332,7 +353,7 @@ Pages画面の「最終更新」は、`availability.json` 全体が生成され�
 1. Supabaseプロジェクト、リージョン、料金枠、環境分離を決定・作成する
 2. GitHub Pagesの本番callback URLをSupabaseのRedirect URLsへ登録し、Repository Variablesを設定する
 3. メールマジックリンク、SMTP、リンク有効期限、レート制限を設定して実環境smoke testを行う
-4. 会員データモデル、`profiles`、RLS、規約同意履歴、Auth Hookを別実装する
+4. migrationを開発用Supabaseへ手動適用し、複数の架空ユーザーでRLSと同意RPCを実DB検証する
 5. 退会Edge Functionと保持・削除方針を別実装する
 6. 利用規約とプライバシーポリシーの暫定初版を確認し、版番号・発効日・問い合わせ先を確定する
 7. GitHub Actionsの外部ActionをコミットSHAで固定する
@@ -341,7 +362,7 @@ Pages画面の「最終更新」は、`availability.json` 全体が生成され�
 ## 注意事項
 
 - 自動予約は実装していません。
-- 会員DB、規約同意履歴、RLS、退会処理は未実装です。現在のマイページはSupabase Authセッション内のメールアドレスだけを表示します。
+- 会員DB、規約同意履歴、RLS、規約同意RPC、会員情報表示はmigrationと静的フロントエンドへ実装済みですが、Supabase環境への適用と実DB RLS検証は人手で行う必要があります。退会処理は未実装です。
 - 短い間隔でのアクセスや過剰な並列実行は避けてください。
 - 予約サイトの仕様変更により取得できなくなる可能性があります。
 - `availability.json` とGitHub Pagesは公開情報として扱ってください。

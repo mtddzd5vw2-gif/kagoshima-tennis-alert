@@ -303,6 +303,19 @@ h3 {
   margin-top: 1.5rem;
 }
 
+.account-card--full {
+  grid-column: 1 / -1;
+}
+
+.terms-history {
+  margin: 0;
+  padding-left: 1.25rem;
+}
+
+.terms-history li + li {
+  margin-top: 0.45rem;
+}
+
 .definition-list {
   display: grid;
   grid-template-columns: minmax(8rem, 0.7fr) 1.3fr;

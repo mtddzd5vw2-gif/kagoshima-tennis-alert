@@ -103,15 +103,16 @@ Phase 1の画面名とURLは、GitHub Pagesのリポジトリ配下で動く相�
 1. 利用者が会員登録画面を開く。
 2. 利用規約とプライバシーに関する表示を確認する。
 3. メールアドレスを入力し、現行利用規約への同意を明示する。
-4. クライアントとサーバーで入力と同意を検証する。
+4. クライアントで入力と同意を検証し、同じブラウザのsessionStorageへ個人情報を含まない同意保留markerを保存する。
 5. 認証基盤に未認証アカウントを作成し、マジックリンクを送信する。
-6. サーバー側の信頼できる時刻で、利用者ID、規約バージョン、同意日時を記録する。
+6. Authユーザー作成と同じトランザクションのtriggerで `pending_terms` profileを作成する。
 7. 認証メールを送信し、認証待ち画面を表示する。
-8. 利用者が有効な認証リンクを開く。
-9. 認証基盤がメール認証済み状態へ更新する。
-10. 利用者を認証完了画面またはマイページへ案内する。
+8. 利用者が同じブラウザで有効な認証リンクを開く。
+9. callbackがPKCE codeをセッションへ交換する。
+10. 同意保留markerがある場合だけ、引数なしの `accept_current_terms()` RPCがDB現行規約版とDB時刻で同意履歴を追加し、profileを `active` へ更新する。
+11. RPCが失敗してもセッションを破棄せず、マイページの再同意UIへ案内する。
 
-アカウント作成と規約同意記録の一貫性を、データベーストリガー、サーバー処理、補償処理のどれで保証するかは**要決定**。
+同意履歴追加とprofile更新は同じRPCトランザクションで行う。同一規約版への再実行は冪等である。既存Authユーザーはprofileだけを `pending_terms` で補完し、過去の同意を推測しない。
 
 ### 6.3 入力と検証
 
@@ -127,11 +128,11 @@ Phase 1の画面名とURLは、GitHub Pagesのリポジトリ配下で動く相�
 
 - 登録時点の現行規約を全文または到達しやすい画面で表示する。
 - 同意チェックは初期状態でオフとし、利用者の能動的操作を必要とする。
-- 同意記録には少なくとも `user_id`、`terms_version_id`、`accepted_at` を保持する。
+- 同意記録には `user_id`、`document_type`、`version`、`accepted_at`、`source` を保持する。
 - 同意日時はクライアント送信値を信用せず、サーバーまたはデータベース時刻を使用する。
 - 規約本文はバージョンごとに変更不能な履歴として管理する。
 
-IPアドレス、User-Agentを同意証跡として保存するか、保存期間をどうするかは、必要性と個人情報最小化を比較して**要決定**。
+Phase 1の同意証跡へIPアドレス、User-Agent、氏名、電話番号、住所は保存しない。
 
 ### 7.2 規約改定
 
@@ -190,8 +191,9 @@ Phase 1はマジックリンク認証を採用するため、パスワードの�
 - マスクしたメールアドレスまたは認証基盤が提供する本人のメールアドレス
 - メール認証状態
 - 同意済み利用規約のバージョンと同意日
+- 会員登録日時と同意履歴
 - ログアウト
-- 退会への導線
+- 退会は準備中表示
 - 問い合わせ先
 
 メールアドレス変更機能をPhase 1に含めるかは**要決定**。
@@ -208,7 +210,7 @@ Phase 1はマジックリンク認証を採用するため、パスワードの�
 
 - マイページは認証必須とする。
 - URLやリクエスト中の `user_id` を信用せず、認証セッションの利用者IDを使用する。
-- 利用者は自分のプロフィール、規約同意、通知条件、連携、配信履歴だけを参照・変更できる。
+- Phase 1の利用者は自分のprofileと規約同意履歴だけを参照できる。profile・同意履歴の直接書込みはできず、現行規約への同意だけを引数なしRPCで行う。
 
 ## 11. 通知条件
 
@@ -300,16 +302,18 @@ Phase 1はマジックリンク認証を採用するため、パスワードの�
 
 ## 15. データモデル案
 
-PostgreSQLを想定した論理モデル案。実際のテーブル名、型、制約、保持期間はマイグレーション作成時に確定する。
+Phase 1会員・規約テーブルはmigrationで確定済みである。後続Phaseの施設・通知・課金は引き続き論理モデル案とする。
 
 ### 15.1 会員・規約
 
 | エンティティ | 主な項目 | 備考 |
 | --- | --- | --- |
 | `auth.users` | `id`, `email`, `email_confirmed_at`, 認証メタデータ | Supabase Auth採用時。認証基盤が管理 |
-| `user_profiles` | `user_id`, `status`, `created_at`, `withdrawn_at` | メールアドレスを重複保存しない |
-| `terms_versions` | `id`, `version`, `published_at`, `effective_at`, `content_uri`, `content_hash`, `requires_reconsent` | 公開規約の不変な版 |
-| `terms_acceptances` | `id`, `user_id`, `terms_version_id`, `accepted_at` | 利用者ごとの同意履歴 |
+| `profiles` | `id`, `membership_status`, `latest_terms_version`, `latest_terms_accepted_at`, `created_at`, `updated_at` | `auth.users(id)` をcascade参照。メールアドレスを重複保存しない |
+| `legal_document_versions` | `document_type`, `version`, `effective_at`, `is_current`, `created_at` | 同一文書種別のcurrentは部分一意indexで1件 |
+| `terms_acceptances` | `id`, `user_id`, `document_type`, `version`, `accepted_at`, `source` | 追記専用。同一利用者・文書種別・版は一意 |
+
+開発用現行規約版は `2026-08-04-draft` である。一般公開前に正式本文・版番号・発効日へ更新し、正式版への再同意を求める。
 
 ### 15.2 施設・空き
 
@@ -363,10 +367,13 @@ PostgreSQLを想定した論理モデル案。実際のテーブル名、型、�
 - 管理用Service Role等はサーバー処理だけで使用し、ブラウザ、Pages、リポジトリへ含めない。
 - 管理者権限の付与、監査、緊急停止方法は**要決定**。
 
-### 16.3 RLS方針案
+### 16.3 Phase 1 RLS
 
-- `user_profiles`: `user_id = auth.uid()` の本人だけが参照可能。更新可能列を限定する。
-- `terms_acceptances`: 本人は参照可能。追加は信頼できる登録処理に限定し、更新・削除を原則禁止する。
+- 3つのpublicテーブルすべてでRLSを有効にする。
+- `profiles`: `id = auth.uid()` の本人だけがSELECT可能。ブラウザからのINSERT/UPDATE/DELETEは許可しない。
+- `terms_acceptances`: `user_id = auth.uid()` の本人だけがSELECT可能。ブラウザからのINSERT/UPDATE/DELETEは許可しない。
+- `legal_document_versions`: authenticated利用者はcurrentのtermsだけをSELECT可能。anonにはDB権限を与えない。
+- `accept_current_terms()` はauthenticatedだけがEXECUTEでき、anonとPUBLICから実行権限を剥奪する。
 - `notification_rules`と関連表: 本人だけがCRUD可能。プラン上限はサーバー側でも検証する。
 - `notification_events`: 本人は必要な表示項目だけ参照可能。生成・状態更新は通知エンジンに限定する。
 - 施設マスター: 公開可能な列だけ匿名参照を許可し、更新は運用者に限定する。

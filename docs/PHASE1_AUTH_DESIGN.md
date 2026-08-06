@@ -5,7 +5,7 @@
 | 項目 | 内容 |
 | --- | --- |
 | 対象 | Tennis Court Watcher Phase 1 会員基盤 |
-| 状態 | Supabase Authマジックリンク・PKCEフロントエンド実装済み。会員DB等の未確定事項は「**要決定**」と記載する |
+| 状態 | Supabase Authマジックリンク・PKCE、会員profile、規約版・同意履歴、RLS、同意RPC、最小限のマイページを実装済み。外部環境へのmigration適用と退会は未実施 |
 | 作成日 | 2026-08-04 |
 | 方針決定日 | 2026-08-04 |
 | 前提文書 | [Project Vision](./PROJECT_VISION.md)、[Development Roadmap](./DEVELOPMENT_ROADMAP.md)、[Service Specification](./SERVICE_SPECIFICATION.md) |
@@ -38,7 +38,7 @@
 - `.github/workflows/update-availability.yml` はpytest、スクレイピング、診断Artifact、2つのJSONの更新、GitHub Pagesデプロイを行う。
 - Pagesは既存トップと公開JSONに加え、`auth`、`account`、`legal`、`assets` を同じArtifactから配信する。
 - `tests/` はPhase 0回帰に加え、公開設定生成、必須変数、秘密鍵拒否、マジックリンク送信、PKCE callback、セッション確認、ログアウト、console非露出を検証する。
-- Supabase Authのブラウザ接続は実装済みだが、会員データベース、`profiles`、RLS、規約同意履歴、Auth Hook、退会Edge Function、通知設定はまだ存在しない。
+- Supabase Authのブラウザ接続に加え、`supabase/migrations/20260804000000_create_member_profiles.sql` に会員データベース、RLS、規約同意RPCを実装済みである。外部Supabaseへの適用、退会Edge Function、通知設定はまだ実施していない。
 - `.gitignore` は `.env` 系、`assets/config/auth-config.js`、secret候補ファイル、Supabase CLI一時状態を除外する。
 
 ### 1.2 Phase 1で守る境界
@@ -80,10 +80,13 @@ Phase 1は次を不変条件とする。
 
 - ログイン画面でメール形式と利用規約同意を確認し、条件成立時だけ `signInWithOtp` を実行する。
 - callbackでURLの `code` を読み、直ちに認証パラメータを消去して `exchangeCodeForSession` を実行する。
-- マイページは `getSession` で未認証者をログイン画面へ戻し、Authセッションのメールアドレスだけを表示する。
+- マイページは `getSession` で未認証者をログイン画面へ戻し、Authセッションのメール・認証状態と、RLS経由の本人profile・同意履歴を表示する。
 - `signOut` でローカルを含む現在のセッションを終了する。
 - 成功・失敗表示はアカウントの存在を区別せず、メールアドレス、認証URL、code、access token、refresh tokenをconsoleへ出さない。
-- 規約同意のDB記録、profileの状態判定、RLS、退会は今回の実装境界外である。
+- `legal_document_versions`、`profiles`、追記専用の `terms_acceptances`、新規ユーザーtrigger、既存ユーザーbackfillをmigration化した。
+- 本人SELECTだけを許可するRLSと、現行規約をDBから取得して同意履歴とprofileを同一トランザクションで更新する引数なしRPCを実装した。
+- ログイン成功時の同意保留marker、callbackでの同意RPC、失敗時のマイページ再同意、profile・同意履歴表示を実装した。
+- 退会、通知設定、LINE連携、課金は今回の実装境界外である。
 
 ## 3. Phase 1の対象外
 
@@ -133,7 +136,7 @@ flowchart LR
 | GitHub Pages | 登録・認証・ログイン・マイページのUI、公開用キーを使ったAuth/Data API呼び出し | 認可の最終判断、service role/secret keyの保持 |
 | Supabase Auth | マジックリンク発行、メール確認、ログイン、セッション、Authユーザー削除 | 利用規約本文の公開元、Phase 0の空き取得 |
 | PostgreSQL | プロフィール、規約版、同意履歴、RLS、会員状態 | メールアドレスや認証情報の重複保存 |
-| Auth Hook/DB Trigger | 現行規約への同意宣言の検証、プロフィールと同意履歴の同一トランザクション作成、認証完了時の会員有効化 | クライアント送信の同意日時を信用すること |
+| DB Trigger / RPC | Authユーザー作成時のpending profile作成、現行規約の取得、同意履歴とprofileの同一トランザクション更新 | `raw_user_meta_data` やクライアント送信の利用者ID・同意日時を信用すること |
 | Edge Function | 退会など、Auth Admin権限が必要な処理 | 未認証呼び出し、リクエストの `user_id` を信用すること |
 | GitHub Actions | 既存Phase 0の更新、将来の静的会員画面のビルド・追加配信 | 本番会員データの取得、service role keyのフロントエンド埋め込み |
 
@@ -146,7 +149,7 @@ flowchart LR
 - 開発・ステージング・本番は別プロジェクトに分離する案を推奨する。最低限、本番データをローカルやテストへ複製しない。
 - Auth APIのレート制限とCAPTCHAの採否をリリース前に確認する。
 - Supabase標準の試用メール送信は本番用途に依存せず、独自SMTPを設定する。配信事業者・ドメインは**要決定**。
-- Supabaseのリージョン、料金枠、バックアップ要件、Auth Hookを利用できるプランは**要決定**である。
+- Supabaseのリージョン、料金枠、バックアップ要件は**要決定**である。
 
 ## 5. GitHub Pagesとの接続方法
 
@@ -244,55 +247,49 @@ flowchart LR
 
 ## 8. 会員登録からメール認証完了までのシーケンス
 
-次図は会員DB、Auth Hook、同意履歴まで含む将来のPhase 1完成形である。今回実装したのは `signInWithOtp`、認証メール、PKCE code交換、Authセッション、マイページ遷移の経路だけであり、`H` と `D` の処理は未実装である。
+次図のうち、現在はAuthユーザー作成時のprofile triggerと、callbackまたはマイページから呼ぶ同意RPCを採用している。Before User Created Hookは使用せず、同意の確定は認証セッション確立後に行う。
 
 ```mermaid
 sequenceDiagram
     actor U as 利用者
     participant P as GitHub Pages
     participant A as Supabase Auth
-    participant H as Before User Created Hook
-    participant D as PostgreSQL Trigger
+    participant D as PostgreSQL
     participant M as 認証メール
 
     U->>P: 登録画面を開く
     P-->>U: 現行規約版・プライバシー導線を表示
     U->>P: メール、規約同意を送信
-    P->>A: signInWithOtp(email, terms assertion, fixed callback)
-    A->>H: ユーザー作成前検証
-    H->>H: 同意=true、規約版=DB現行版を確認
-    alt 不一致・未同意
-        H-->>A: 登録拒否
-        A-->>P: 一般化したエラー
-        P-->>U: 規約再読込または再試行を案内
-    else 有効
-        H-->>A: 許可
-        A->>D: auth.users INSERT
-        D->>D: profilesとterms_acceptancesを同一TXで作成
-        Note over D: accepted_atはDB時刻
-        A->>M: 認証メール送信
-        A-->>P: 認証待ち応答
-        P-->>U: 登録有無を過度に露出しない案内
-        U->>M: 認証リンクを開く
-        M->>A: token/codeを検証
-        A->>D: email_confirmed_at更新
-        D->>D: profilesをactiveへ更新
-        A-->>P: 許可済みcallbackへ遷移
-        P->>P: code交換・URL消去・セッション検証
-        P->>D: 自分のactive profileと同意履歴を取得
-        D-->>P: RLSで本人行だけ返す
-        P-->>U: 認証完了またはマイページ
+    P->>P: 同意保留markerをsessionStorageへ保存
+    P->>A: signInWithOtp(email, fixed callback)
+    A->>D: auth.users INSERT
+    D->>D: triggerでpending_terms profile作成
+    A->>M: 認証メール送信
+    A-->>P: 一般化した認証待ち応答
+    U->>M: 同じブラウザで認証リンクを開く
+    M->>A: token/codeを検証
+    A-->>P: 許可済みcallbackへ遷移
+    P->>P: code交換・URL消去・セッション検証
+    opt 同意保留markerがある
+        P->>D: accept_current_terms()
+        D->>D: auth.uid()とDB現行版を取得
+        D->>D: 履歴追加・規約情報更新・pendingのみ有効化
+        D-->>P: versionとaccepted_at
     end
+    P->>D: 本人profileと同意履歴を取得
+    D-->>P: RLSで本人行だけ返す
+    P-->>U: マイページ（必要なら再同意UI）
 ```
 
 ### 8.1 一貫性
 
 - 登録画面は同意チェックなしで送信ボタンを有効にしないが、クライアント検証だけに依存しない。
-- `Before User Created Hook` は `terms_accepted=true` と現行の `terms_version` をDB側で検証する。規約改定直後の古い画面からの登録は拒否し、再読込を案内する。
-- `auth.users` のafter insert triggerは、`profiles` と `terms_acceptances` を同じDBトランザクションで作成する。どちらかに失敗した場合はユーザー作成も失敗させる。
-- `user_metadata` は利用者が変更可能なので認可判断には使用しない。登録時の同意宣言の入力としてのみ扱い、確定記録は変更不能な同意履歴へ保存する。
+- `auth.users` のafter insert triggerは `new.id` だけから `pending_terms` のprofileを作成する。profile作成失敗時はAuthユーザー作成も同一トランザクションで失敗する。
+- `raw_user_meta_data` と `user_metadata` は認可や同意の確定に使用しない。
+- 認証後の `accept_current_terms()` は引数を取らず、`auth.uid()` とDB上の現行規約版を使用する。
+- 同意履歴追加とprofileの規約情報更新を同一RPCトランザクションで行い、`pending_terms` の場合だけ `active` へ遷移させる。同一版への再実行は一意制約と `ON CONFLICT DO NOTHING` で冪等にする。
 - `accepted_at` をクライアントから受け取らず、DBの `timestamptz` デフォルトで記録する。
-- メール認証完了は `auth.users.email_confirmed_at` を正とし、DB triggerで `profiles.status` を `active` にする。Confirm Email無効化を前提にしない。
+- メール認証完了は `auth.users.email_confirmed_at` を正とし、同意RPC成功時に `pending_terms` だけを `active` にする。規約同意は `suspended` や `withdrawal_pending` を解除せず、`active` はそのまま維持する。
 - trigger障害は登録自体を止め得るため、ローカル・ステージングで異常系まで検証してから本番反映する。
 
 ### 8.2 エラー表示
@@ -309,7 +306,7 @@ sequenceDiagram
 erDiagram
     AUTH_USERS ||--|| PROFILES : has
     AUTH_USERS ||--o{ TERMS_ACCEPTANCES : accepts
-    TERMS_VERSIONS ||--o{ TERMS_ACCEPTANCES : records
+    LEGAL_DOCUMENT_VERSIONS ||--o{ TERMS_ACCEPTANCES : records
 
     AUTH_USERS {
         uuid id PK
@@ -317,30 +314,27 @@ erDiagram
         timestamptz email_confirmed_at
     }
     PROFILES {
-        uuid user_id PK
-        text status
-        timestamptz activated_at
-        timestamptz withdrawal_requested_at
-        timestamptz withdrawn_at
+        uuid id PK
+        membership_status membership_status
+        text latest_terms_version
+        timestamptz latest_terms_accepted_at
         timestamptz created_at
         timestamptz updated_at
     }
-    TERMS_VERSIONS {
-        uuid id PK
-        text version UK
-        text content_uri
-        text content_sha256
-        timestamptz published_at
+    LEGAL_DOCUMENT_VERSIONS {
+        text document_type PK
+        text version PK
         timestamptz effective_at
-        boolean is_registration_current
-        boolean requires_reconsent
+        boolean is_current
+        timestamptz created_at
     }
     TERMS_ACCEPTANCES {
-        uuid id PK
+        bigint id PK
         uuid user_id FK
-        uuid terms_version_id FK
-        text acceptance_source
+        text document_type FK
+        text version FK
         timestamptz accepted_at
+        text source
     }
 ```
 
@@ -353,46 +347,44 @@ erDiagram
 - IPアドレスとUser-Agentを同意証跡に保存するかは、証跡価値と個人情報最小化を比較して**要決定**とする。既定案はPhase 1では保存しない。
 - プライバシーポリシーも版管理する。確認履歴を別テーブルへ保存するか、同意ではなく提示記録だけとするかは法務確認後に**要決定**とする。
 
-## 10. `profiles` テーブル案
+## 10. `profiles` テーブル
 
-テーブル名は既存仕様の `user_profiles` ではなく、Supabaseの一般的な構成に合わせて `public.profiles` とする案である。正式名称はマイグレーション作成時に**要決定**とする。
+正式名称は `public.profiles` とする。
 
 | 列 | 型 | NULL | 制約・用途 |
 | --- | --- | --- | --- |
-| `user_id` | `uuid` | 不可 | PK、`auth.users(id)` FK。削除方針決定後に `ON DELETE CASCADE` を設定 |
-| `status` | `text` | 不可 | `pending_email_verification`、`active`、`withdrawal_pending`、`suspended`、`withdrawn` のCHECK |
-| `activated_at` | `timestamptz` | 可 | 最初のメール認証完了時のDB時刻 |
-| `withdrawal_requested_at` | `timestamptz` | 可 | 退会ロック開始時刻 |
-| `withdrawn_at` | `timestamptz` | 可 | 論理保持する場合の退会完了時刻 |
+| `id` | `uuid` | 不可 | PK、`auth.users(id)` FK、`ON DELETE CASCADE` |
+| `membership_status` | `membership_status` | 不可 | `pending_terms`、`active`、`withdrawal_pending`、`suspended`。初期値は `pending_terms` |
+| `latest_terms_version` | `text` | 可 | 最新の同意規約版 |
+| `latest_terms_accepted_at` | `timestamptz` | 可 | 最新の規約同意DB時刻 |
 | `created_at` | `timestamptz` | 不可 | DB default `now()` |
 | `updated_at` | `timestamptz` | 不可 | DB triggerで更新 |
 
 Phase 1で編集可能なプロフィール項目は設けないことを初期案とする。表示名を収集する必要性は**要決定**であり、目的が確定するまで列を追加しない。メール認証時刻は `auth.users.email_confirmed_at` を正とし、マイページでは本人のAuth user情報から表示する。
 
-`status` はクライアントから更新できない。登録・認証trigger、退会Edge Function、運用者の管理手順だけが更新する。
+`membership_status` と規約列はクライアントから直接更新できない。同意RPCは `pending_terms` だけを `active` にし、`active`、`suspended`、`withdrawal_pending` は元の状態を維持したまま最新同意情報を更新する。規約同意を停止解除や退会取消しの手段として扱わない。
 
 ## 11. 利用規約同意履歴の保持方法
 
-### 11.1 `terms_versions`
+### 11.1 `legal_document_versions`
 
-- `version` は人が識別できる不変の文字列とする。形式は日付版かSemVerか**要決定**。
-- `content_uri` は対応する固定版規約ページを指す。
-- `content_sha256` は公開した本文の同一性確認に使う。
-- `is_registration_current=true` は同時に1件だけになる部分一意制約を設ける。
-- `effective_at` が未来の版は登録用の現行版にしない。
-- 公開後の行は更新せず、訂正も新しい版として追加する。
+- 主キーは `(document_type, version)` とし、今回の `document_type` は `terms` だけとする。
+- `(document_type) where is_current` の部分一意indexで、同種文書の現行版を1件に制限する。
+- 開発用初期版は `2026-08-04-draft`。一般公開前に正式版を追加し、currentを切り替えて再同意を求める。
+- ブラウザroleには書込み権限を与えない。
 
 ### 11.2 `terms_acceptances`
 
 | 列 | 型 | 用途 |
 | --- | --- | --- |
-| `id` | `uuid` | PK、DB生成 |
+| `id` | `bigint` | identity PK、DB生成 |
 | `user_id` | `uuid` | `auth.users(id)` FK |
-| `terms_version_id` | `uuid` | `terms_versions(id)` FK |
-| `acceptance_source` | `text` | `signup` または将来の `reconsent` |
+| `document_type` | `text` | 現在は `terms` |
+| `version` | `text` | `legal_document_versions` との複合FK |
 | `accepted_at` | `timestamptz` | DB時刻 |
+| `source` | `text` | 現在は `web` |
 
-`unique(user_id, terms_version_id)` を設け、再試行で同一同意を重複させない。同意履歴は利用者が参照できるが、INSERTは登録triggerまたは再同意用の信頼できるDB関数だけ、UPDATE/DELETEは原則禁止とする。規約改定時は過去行を上書きしない。
+`unique(user_id, document_type, version)` を設け、再試行で同一同意を重複させない。同意履歴は本人が参照できるが、ブラウザroleへINSERT/UPDATE/DELETEをGrantせず、同意RPCだけが追加する。規約改定時は過去行を上書きしない。
 
 退会後に同意証跡を保持する期間、匿名化方法、法的必要性は**要決定**である。決定前に本番リリースしない。
 
@@ -400,42 +392,29 @@ Phase 1で編集可能なプロフィール項目は設けないことを初期�
 
 1. Data APIから到達できる `public` スキーマの全テーブルでRLSを明示的に有効化する。
 2. RLS有効化だけでなく、`anon` と `authenticated` のテーブル・列権限を最小化する。
-3. `anon` は公開中の `terms_versions` の公開列だけ参照可能とし、`profiles`、`terms_acceptances` へ一切アクセスさせない。
+3. `anon` は今回の3テーブルへ一切アクセスさせない。公開規約本文は静的な `legal/terms.html` で提供する。
 4. `authenticated` は自分の行だけ参照可能とする。
-5. `profiles.status`、会員ライフサイクル日時、`terms_acceptances` はクライアントから更新させない。
+5. `profiles.membership_status`、規約情報、`terms_acceptances` はクライアントから直接更新させない。
 6. 全利用者所有テーブルのポリシーは `auth.uid()` と行の `user_id` を比較する。URLやリクエスト本文の `user_id` を認可に使わない。
 7. Phase 2以降の利用者所有テーブルでも、所有者が `active` であることを確認する共通方針を採用し、退会ロック直後から既存JWTによるアクセスを拒否する。
 8. service role/secret keyを使う処理はRLSを迂回するため、Edge Function内でも利用者JWTを検証し、対象IDを認証済み利用者から導出する。
 9. Viewを公開する場合はRLS迂回を避けるため `security_invoker` を検討し、不要なViewは公開スキーマに作らない。
 10. RLSポリシー、Grant、trigger、DB関数をマイグレーションとしてレビューし、Dashboard上だけの手作業にしない。
 
-## 13. 認証済みユーザーだけが自分の情報を参照・更新できるポリシー
+## 13. 認証済みユーザーだけが自分の情報を参照できるポリシー
 
-次は実装時のポリシー形を示す設計例であり、この文書ではDBへ適用しない。
+実装した本人SELECTポリシーの要点は次のとおりである。
 
 ```sql
 alter table public.profiles enable row level security;
 
-create policy profiles_select_own_active
+create policy profiles_select_own
 on public.profiles
 for select
 to authenticated
 using (
-  (select auth.uid()) = user_id
-  and status = 'active'
-);
-
-create policy profiles_update_own_active
-on public.profiles
-for update
-to authenticated
-using (
-  (select auth.uid()) = user_id
-  and status = 'active'
-)
-with check (
-  (select auth.uid()) = user_id
-  and status = 'active'
+  (select auth.uid()) is not null
+  and (select auth.uid()) = id
 );
 ```
 
@@ -471,7 +450,7 @@ using (
 2. 退会専用マジックリンクの再送など、Supabaseで本人性を再確認する。具体方式は**要決定**。
 3. ブラウザが利用者JWT付きで `withdraw-account` Edge Functionを呼ぶ。
 4. Edge FunctionはJWTを検証し、リクエスト本文の `user_id` を無視して認証主体のIDを使う。
-5. DB関数が `profiles.status=withdrawal_pending` と `withdrawal_requested_at` を設定する。この時点でRLSが本人のデータアクセスを拒否する。
+5. 将来のmigrationで退会日時列と退会専用RLSを追加し、DB関数が `profiles.membership_status=withdrawal_pending` を設定した時点で会員機能を拒否する。
 6. Phase 2以降の通知条件・キューが存在する場合は送信対象から外す。Phase 1にはまだ存在しない。
 7. Edge Functionだけが保持するsecret/service role権限でAuth Adminのユーザー削除を行う。
 8. ハード削除方針なら、FK cascadeで `profiles` と同意履歴を削除する。保持義務がある情報は事前にアクセス制限された非公開スキーマへ最小限・匿名化して移す。
@@ -481,7 +460,7 @@ using (
 
 - 処理は同じ利用者が再送しても安全な状態遷移にする。
 - Auth削除に失敗した場合も `withdrawal_pending` のままアクセスと通知を停止し、運用者が再試行できるようにする。
-- Authユーザー削除後も、発行済みJWTは有効期限まで暗号学的には有効な場合がある。全ての会員データポリシーで `profiles.status='active'` または有効プロフィールの存在を要求し、この時間差を閉じる。
+- Authユーザー削除後も、発行済みJWTは有効期限まで暗号学的には有効な場合がある。退会実装時は、会員機能のRLSで `profiles.membership_status='active'` を要求してこの時間差を閉じる。現在のprofile・同意履歴本人SELECTは退会実装前の最小構成である。
 - 退会APIは利用者ID、メールアドレス、JWTをログへ出さず、個人を直接示さない処理IDと成否コードだけを監査する。
 - Supabase Authユーザー削除はサーバー専用処理であり、service role/secret keyをブラウザへ置かない。
 
@@ -584,26 +563,25 @@ Pagesジョブは出力先だけを `--output _site/assets/config/auth-config.js
 - 認証情報をURLとログから除去する処理
 - マイページで本人情報だけを表示する処理
 
-上記のうち公開設定、入力・同意、二重送信、一般化メッセージ、PKCE callback、URL消去、Authセッションのメール表示、ログアウト、console非露出はPlaywrightとpytestで実装済みである。DB・RLS、実メール、期限切れ・二回使用などSupabase実環境が必要な項目は未実装である。
+公開設定、入力・同意、二重送信、一般化メッセージ、PKCE callback、URL消去、callback同意RPC、pending/activeマイページ、本人IDを指定しないRLS依存query、ログアウト、console非露出はPlaywrightとpytestで実装済みである。migrationのDDL・RLS・Grant・RPC・trigger・backfillは静的検査済みである。実メール、期限切れ・二回使用、実PostgreSQL上のRLS分離はSupabase環境での手動検証が残る。
 
 ### 19.2 DB・RLSテスト
 
 | 主体 | `profiles` | `terms_acceptances` | 公開中の規約版 |
 | --- | --- | --- | --- |
-| `anon` | 0件、書込不可 | 0件、書込不可 | 公開列のみ参照可 |
+| `anon` | 権限なし | 権限なし | DB権限なし。静的規約ページは閲覧可 |
 | 本人A・active | Aだけ参照 | Aだけ参照 | 参照可 |
 | 本人B・active | Aを参照・更新不可 | Aを参照不可 | 参照可 |
 | 未認証相当 | 会員データ不可 | 会員データ不可 | 参照可 |
-| `withdrawal_pending` | 会員データ不可 | 会員データ不可 | 参照可 |
+| `withdrawal_pending` | 本人行を参照可 | 本人履歴を参照可 | current termsを参照可 |
 
 さらに次を検証する。
 
-- 同意なし、古い規約版、存在しない規約版ではAuth Hookが登録を拒否する。
-- 正常登録ではprofileと同意履歴が同時に1件ずつ作成され、同意日時がDB時刻になる。
+- 新規Authユーザーには `pending_terms` profileだけが作成され、同意履歴を推測しない。
+- 正常な同意RPCでは履歴追加とprofile規約情報更新を同一トランザクションで行い、同意日時がDB時刻になる。`pending_terms` だけが `active` へ遷移し、`suspended` と `withdrawal_pending` は解除されない。
 - trigger失敗時にAuthユーザーだけが残らない。
-- メール認証前は `pending_email_verification`、認証後だけ `active` になる。
-- `status` と同意履歴を利用者JWTで改変・削除できない。
-- 退会ロック後は削除前のJWTでも会員データを取得できない。
+- 同一規約版への同意RPC再実行で履歴が重複しない。
+- `membership_status` と同意履歴を利用者JWTで直接改変・削除できない。
 
 ### 19.3 結合・E2Eテスト
 
@@ -638,6 +616,21 @@ Pagesジョブは出力先だけを `--output _site/assets/config/auth-config.js
 - scraper dry-run、基準化、既存LINE通知、JSON commit条件、Pages権限分離を変更しない。
 - 会員機能の設定不足・Supabase障害時にもPhase 0のテスト、取得、デプロイが継続する。
 
+### 19.6 Supabase SQL Editorへの適用
+
+migrationは自動実行しない。人間が対象の開発用Supabaseプロジェクトと環境名を確認し、DashboardのSQL Editorで `supabase/migrations/20260804000000_create_member_profiles.sql` の全文を新しいqueryへ貼り付け、1回だけ実行する。service role key、secret key、DBパスワードは不要である。
+
+適用後は、開発用の架空ユーザーだけを使って次を確認する。
+
+1. 初期規約 `terms / 2026-08-04-draft` がcurrentとして1件だけ存在する。
+2. 既存Authユーザーに未存在のprofileだけが `pending_terms` で補完され、同意履歴は増えない。
+3. 新規Authユーザーにprofile triggerが動く。
+4. `anon` は3テーブルを参照できず、`authenticated` は本人profile・本人同意履歴・current termsだけを参照できる。
+5. ブラウザroleによる直接INSERT/UPDATE/DELETEが拒否される。
+6. `accept_current_terms()` がDB現行版とDB時刻を記録し、`pending_terms` だけをactiveへ更新し、停止・退会処理中の状態を解除せず、再実行しても履歴が重複しない。
+
+開発用版は一般公開前に正式版へ置き換える。正式版を新しい行として追加し、同じトランザクションで旧版の `is_current` をfalse、新版をtrueに切り替え、既存利用者へ再同意を求める。
+
 ## 20. 段階的な実装手順
 
 ### Step 0: 要決定事項のうち実装前提を確定
@@ -650,7 +643,7 @@ Supabase採用、メールのマジックリンク認証、GitHub Pages継続、
 
 ### Step 2: Supabaseローカル環境とDB migration
 
-`terms_versions`、`profiles`、`terms_acceptances`、制約、Grant、RLS、Auth Hook、triggerをmigration化する。架空データでRLSテストを作る。
+**migration実装済み、外部環境への適用は未実施。** `legal_document_versions`、`profiles`、`terms_acceptances`、制約、Grant、RLS、trigger、backfill、同意RPCを1本のmigrationへまとめた。架空ユーザーを使う実DB RLSテストは適用先の開発環境で行う。
 
 ### Step 3: 規約・プライバシー公開画面
 
@@ -658,7 +651,7 @@ Supabase採用、メールのマジックリンク認証、GitHub Pages継続、
 
 ### Step 4: 会員登録と同意記録
 
-**ブラウザ部分を実装済み。** 登録・ログイン共通画面、入力検証、明示同意、Auth `signInWithOtp`、一般化した表示を実装した。Hook/trigger、同意記録、レート制限の運用設定は未実装である。
+**実装済み。** 登録・ログイン共通画面、入力検証、明示同意、Auth `signInWithOtp`、一般化した表示、同一ブラウザ内の同意保留marker、profile trigger、同意RPCを実装した。レート制限の運用設定は未実施である。
 
 ### Step 5: メール認証
 
@@ -666,7 +659,7 @@ Supabase採用、メールのマジックリンク認証、GitHub Pages継続、
 
 ### Step 6: ログイン・ログアウト・マイページ
 
-**Authセッション部分を実装済み。** `getSession` によるroute guard、Authセッションのメールアドレス表示、`signOut` を実装した。本人profile、active状態、同意履歴は未実装である。
+**実装済み。** `getSession` によるroute guard、Authセッションのメール・認証状態、本人profile、active/pending_terms状態、同意履歴、再同意UI、`signOut` を実装した。
 
 ### Step 7: 退会
 
@@ -701,7 +694,7 @@ E2E、RLS、漏えい検査、アクセシビリティ、Phase 0回帰、バッ�
 
 ### 基盤・配信
 
-- Supabaseのリージョン、料金枠、Auth Hook利用可否
+- Supabaseのリージョン、料金枠
 - 開発・ステージング・本番のプロジェクト分離方法
 - GitHub Pagesの本番URL、リポジトリ名ベースパス、独自ドメインの有無
 - フロントエンドのビルド方式、成果物のコミット有無、CSPヘッダーを補う配信方式
@@ -742,8 +735,8 @@ E2E、RLS、漏えい検査、アクセシビリティ、Phase 0回帰、バッ�
 1. Phase 1をPhase 0から責務・URL・データ・障害の面で分離し、既存稼働系へ認証依存を持ち込まない。
 2. 静的PagesからSupabaseへ直接接続するのは公開用キーだけとし、RLSを認可の最終境界にする。
 3. service role/secret keyが必要な退会処理はEdge Functionへ限定する。
-4. 利用規約同意はクライアントUIだけで完結させず、Hookで現行版を検証し、DB triggerで版とDB時刻を変更不能な履歴として保存する。
-5. Authのメール確認と `profiles.status=active` の両方を会員有効性に使い、退会ロック後の既存JWTもRLSで拒否する。
+4. 利用規約同意はクライアントUIだけで完結させず、引数なしRPCが `auth.uid()` とDB現行版を取得し、DB時刻の追記専用履歴として保存する。
+5. Authのメール確認と `profiles.membership_status=active` の両方を画面上の会員有効性に使う。退会時の追加ロックは退会実装時に設計する。
 6. メールアドレスを `profiles` へ複製せず、GitHub、Pages、Artifact、ログへ個人情報・認証情報を出さない。
 7. GPSは取得・保存・認可に使用しない。
 

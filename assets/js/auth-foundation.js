@@ -3,6 +3,7 @@
 
   const LOGIN_PATH = "../auth/login.html";
   const ACCOUNT_PATH = "../account/index.html";
+  const PENDING_TERMS_KEY = "tcw.pendingTermsAcceptance";
 
   function getAuthConfig() {
     const config = window.TCW_AUTH_CONFIG;
@@ -57,6 +58,45 @@
     }
   }
 
+  function hasPendingTermsAcceptance() {
+    try {
+      return window.sessionStorage.getItem(PENDING_TERMS_KEY) === "1";
+    } catch {
+      return false;
+    }
+  }
+
+  function rememberPendingTermsAcceptance() {
+    try {
+      window.sessionStorage.setItem(PENDING_TERMS_KEY, "1");
+    } catch {
+      // Authentication can continue. The account page provides a retry path.
+    }
+  }
+
+  function clearPendingTermsAcceptance() {
+    try {
+      window.sessionStorage.removeItem(PENDING_TERMS_KEY);
+    } catch {
+      // The marker contains no account data and expires with this browser tab.
+    }
+  }
+
+  function formatTimestamp(value) {
+    if (!value) {
+      return "未登録";
+    }
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+      return "確認できません";
+    }
+    return new Intl.DateTimeFormat("ja-JP", {
+      dateStyle: "medium",
+      timeStyle: "short",
+      timeZone: "Asia/Tokyo",
+    }).format(date);
+  }
+
   function setupLogin(client, config) {
     const form = document.querySelector("[data-auth-form]");
     if (!form) {
@@ -102,6 +142,7 @@
           if (error) {
             throw new Error("magic_link_request_failed");
           }
+          rememberPendingTermsAcceptance();
           form.reset();
           setStatus(
             status,
@@ -151,6 +192,17 @@
       if (error) {
         throw new Error("code_exchange_failed");
       }
+
+      if (hasPendingTermsAcceptance()) {
+        try {
+          const result = await client.rpc("accept_current_terms");
+          if (!result.error) {
+            clearPendingTermsAcceptance();
+          }
+        } catch {
+          // Keep the session and marker. The account page provides a retry path.
+        }
+      }
       window.location.replace(ACCOUNT_PATH);
     } catch {
       setStatus(
@@ -166,6 +218,18 @@
     const loading = document.querySelector("[data-account-loading]");
     const content = document.querySelector("[data-account-content]");
     const email = document.querySelector("[data-account-email]");
+    const emailVerified = document.querySelector("[data-account-email-verified]");
+    const membershipStatus = document.querySelector("[data-membership-status]");
+    const createdAt = document.querySelector("[data-account-created-at]");
+    const latestTermsVersion = document.querySelector("[data-latest-terms-version]");
+    const latestTermsAcceptedAt = document.querySelector(
+      "[data-latest-terms-accepted-at]",
+    );
+    const termsHistory = document.querySelector("[data-terms-history]");
+    const consentPanel = document.querySelector("[data-terms-consent-panel]");
+    const consentInput = document.querySelector("[data-account-terms-consent]");
+    const consentButton = document.querySelector("[data-accept-current-terms]");
+    const consentStatus = document.querySelector("[data-terms-consent-status]");
     const logout = document.querySelector("[data-sign-out]");
     const status = document.querySelector("[data-action-status]");
 
@@ -189,9 +253,126 @@
     email.textContent = session.user && session.user.email
       ? session.user.email
       : "確認済み";
-    loading.hidden = true;
+    emailVerified.textContent =
+      session.user && session.user.email_confirmed_at
+        ? "認証済み"
+        : "確認状態を取得できません";
     content.hidden = false;
     logout.disabled = false;
+
+    const renderTermsHistory = (acceptances) => {
+      termsHistory.replaceChildren();
+      if (!acceptances.length) {
+        const empty = document.createElement("li");
+        empty.textContent = "同意履歴はありません";
+        termsHistory.append(empty);
+        return;
+      }
+      for (const acceptance of acceptances) {
+        const item = document.createElement("li");
+        item.textContent =
+          `${acceptance.version}（${formatTimestamp(acceptance.accepted_at)}）`;
+        termsHistory.append(item);
+      }
+    };
+
+    const loadAccountData = async () => {
+      setStatus(loading, "会員情報を確認しています…");
+      loading.hidden = false;
+      consentPanel.hidden = true;
+
+      const [profileResult, termsResult, currentDocumentResult] =
+        await Promise.all([
+          client
+            .from("profiles")
+            .select(
+              "membership_status,latest_terms_version," +
+                "latest_terms_accepted_at,created_at",
+            )
+            .single(),
+          client
+            .from("terms_acceptances")
+            .select("document_type,version,accepted_at,source")
+            .order("accepted_at", { ascending: false }),
+          client
+            .from("legal_document_versions")
+            .select("version,effective_at")
+            .eq("document_type", "terms")
+            .eq("is_current", true)
+            .single(),
+        ]);
+
+      if (
+        profileResult.error ||
+        termsResult.error ||
+        currentDocumentResult.error ||
+        !profileResult.data ||
+        !currentDocumentResult.data
+      ) {
+        throw new Error("account_data_unavailable");
+      }
+
+      const profile = profileResult.data;
+      const acceptances = termsResult.data || [];
+      const currentVersion = currentDocumentResult.data.version;
+      const hasCurrentAcceptance = acceptances.some(
+        (acceptance) =>
+          acceptance.document_type === "terms" &&
+          acceptance.version === currentVersion,
+      );
+
+      membershipStatus.textContent = profile.membership_status;
+      createdAt.textContent = formatTimestamp(profile.created_at);
+      latestTermsVersion.textContent =
+        profile.latest_terms_version || "未同意";
+      latestTermsAcceptedAt.textContent = formatTimestamp(
+        profile.latest_terms_accepted_at,
+      );
+      renderTermsHistory(acceptances);
+
+      const requiresConsent =
+        profile.membership_status === "pending_terms" ||
+        !hasCurrentAcceptance;
+      consentPanel.hidden = !requiresConsent;
+      consentInput.checked = false;
+      consentButton.disabled = true;
+      setStatus(consentStatus, "");
+      loading.hidden = true;
+    };
+
+    consentInput.addEventListener("change", () => {
+      consentButton.disabled = !consentInput.checked;
+    });
+
+    let acceptingTerms = false;
+    consentButton.addEventListener("click", async () => {
+      if (acceptingTerms || !consentInput.checked) {
+        return;
+      }
+      acceptingTerms = true;
+      consentButton.disabled = true;
+      setStatus(consentStatus, "規約への同意を登録しています…");
+      try {
+        const result = await client.rpc("accept_current_terms");
+        if (result.error) {
+          throw new Error("terms_acceptance_failed");
+        }
+        clearPendingTermsAcceptance();
+        await loadAccountData();
+        setStatus(status, "利用規約への同意を登録しました。", "success");
+      } catch {
+        setStatus(
+          consentStatus,
+          "同意を登録できませんでした。時間をおいて、もう一度お試しください。",
+          "error",
+        );
+      } finally {
+        acceptingTerms = false;
+        if (!consentPanel.hidden) {
+          consentButton.disabled = !consentInput.checked;
+        }
+      }
+    });
 
     let signingOut = false;
     logout.addEventListener("click", async () => {
@@ -218,6 +399,16 @@
         );
       }
     });
+
+    try {
+      await loadAccountData();
+    } catch {
+      setStatus(
+        loading,
+        "会員情報を取得できませんでした。時間をおいて再読み込みしてください。",
+        "error",
+      );
+    }
   }
 
   async function start() {

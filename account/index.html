@@ -41,9 +41,62 @@
             <dd>ログイン中</dd>
             <dt>メールアドレス</dt>
             <dd data-account-email></dd>
-            <dt>同意した規約</dt>
-            <dd>同意履歴は準備中</dd>
+            <dt>メール認証</dt>
+            <dd data-account-email-verified>確認中</dd>
+            <dt>会員状態</dt>
+            <dd data-membership-status>確認中</dd>
+            <dt>会員登録日時</dt>
+            <dd data-account-created-at>確認中</dd>
+            <dt>最新の同意規約</dt>
+            <dd data-latest-terms-version>確認中</dd>
+            <dt>最新の規約同意日時</dt>
+            <dd data-latest-terms-accepted-at>確認中</dd>
           </dl>
+        </section>
+
+        <section
+          class="account-card account-card--full"
+          aria-labelledby="terms-history-title"
+        >
+          <h2 id="terms-history-title">利用規約の同意履歴</h2>
+          <ul class="terms-history" data-terms-history>
+            <li>確認中</li>
+          </ul>
+        </section>
+
+        <section
+          class="account-card account-card--full"
+          data-terms-consent-panel
+          aria-labelledby="terms-consent-title"
+          hidden
+        >
+          <h2 id="terms-consent-title">現行の利用規約への同意</h2>
+          <p class="muted">
+            会員機能を利用するには、現行の
+            <a href="../legal/terms.html">利用規約（開発用暫定版）</a>
+            を確認し、明示的に同意してください。
+          </p>
+          <label class="consent" for="account-terms-consent">
+            <input
+              id="account-terms-consent"
+              type="checkbox"
+              data-account-terms-consent
+            >
+            <span>現行の利用規約を確認し、同意します。</span>
+          </label>
+          <button
+            class="button"
+            type="button"
+            data-accept-current-terms
+            disabled
+          >
+            利用規約に同意する
+          </button>
+          <p
+            class="status-text"
+            data-terms-consent-status
+            aria-live="polite"
+          ></p>
         </section>
 
         <section class="account-card" aria-labelledby="account-actions-title">
