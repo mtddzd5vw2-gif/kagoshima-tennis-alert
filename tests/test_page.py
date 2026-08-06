@@ -164,6 +164,21 @@ def expected_facility_status_label(facility: dict) -> str:
     return "正常"
 
 
+def test_top_page_has_static_account_link_without_auth_dependencies() -> None:
+    soup = BeautifulSoup(INDEX_HTML, "html.parser")
+    account_link = soup.find("a", href="account/index.html")
+
+    assert account_link
+    assert account_link.get_text(strip=True) == "マイページ"
+    script_sources = [
+        script.get("src", "")
+        for script in soup.find_all("script")
+        if script.get("src")
+    ]
+    assert all("supabase" not in source.lower() for source in script_sources)
+    assert all("auth-config" not in source.lower() for source in script_sources)
+
+
 def test_facility_and_total_availability_counts_are_correct(utils_page: Page) -> None:
     data = {
         "facilities": [

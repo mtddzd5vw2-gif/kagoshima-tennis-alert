@@ -22,6 +22,20 @@
       }
       h1 { margin: 0 0 8px; font-size: clamp(1.45rem, 6vw, 2rem); }
       header p { margin: 0; color: #dcebe1; line-height: 1.6; }
+      header .account-navigation { margin-top: 16px; }
+      .account-navigation a {
+        display: inline-flex;
+        align-items: center;
+        min-height: 44px;
+        border: 1px solid rgb(255 255 255 / 55%);
+        border-radius: 999px;
+        padding: 8px 16px;
+        color: #12372a;
+        background: white;
+        font-weight: 700;
+        text-decoration: none;
+      }
+      .account-navigation a:hover { background: #e8f3eb; }
       main { width: min(calc(100% - 28px), 720px); margin: 20px auto 44px; }
       .summary, .facility, .notice {
         min-width: 0;
@@ -117,7 +131,10 @@
       }
       button:hover { background: #18583a; }
       button:disabled { cursor: wait; opacity: .7; }
-      button:focus-visible, .slot:focus-visible { outline: 3px solid #e1a72f; outline-offset: 3px; }
+      button:focus-visible, .slot:focus-visible, .account-navigation a:focus-visible {
+        outline: 3px solid #e1a72f;
+        outline-offset: 3px;
+      }
       .empty-days-toggle {
         min-height: 44px;
         margin-top: 8px;
@@ -138,6 +155,9 @@
     <header>
       <h1>鹿児島テニス空き情報</h1>
       <p>直近15日間の土日祝、8:00〜13:00の空き候補を表示します。</p>
+      <p class="account-navigation">
+        <a href="account/index.html">マイページ</a>
+      </p>
     </header>
     <main>
       <section class="summary">

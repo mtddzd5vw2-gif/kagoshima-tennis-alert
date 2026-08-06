@@ -70,7 +70,7 @@ Phase 1は次を不変条件とする。
 | プライバシーポリシーの確認 | 登録前に到達しやすい公開ページとリンクを提示する。別途同意チェックを必須にするかは**要決定** |
 | メール認証 | マジックリンクメール、認証待ち、再送、成功、期限切れ・無効リンク時の再試行導線を提供する |
 | ログイン | メール認証済みかつ有効な会員が、メールアドレスへ届くマジックリンクでログインする |
-| ログアウト | 現在のセッションを終了し、会員情報を画面から消去して公開画面へ戻る |
+| ログアウト | 操作中ブラウザのローカルセッションだけを終了し、会員情報を画面から消去してログイン画面へ戻る |
 | 最小限のマイページ | 自分の会員状態、メール認証状態、同意規約バージョン・日時、問い合わせ、ログアウト、退会導線を表示する |
 | 退会 | 本人確認後に会員を即時ロックし、サーバー側の特権処理でAuthユーザーと個人情報を削除または規定に従って匿名化する |
 
@@ -79,9 +79,10 @@ Phase 1は次を不変条件とする。
 ### 2.1 今回実装した境界
 
 - ログイン画面でメール形式と利用規約同意を確認し、条件成立時だけ `signInWithOtp` を実行する。
+- ログイン画面はフォームを初期状態で隠して `getSession` を先に実行し、既存セッションがあればマイページへ `replace` 遷移する。セッションがない場合と確認失敗時だけフォームを利用可能にし、確認失敗時は一般化した案内を表示する。
 - callbackでURLの `code` を読み、直ちに認証パラメータを消去して `exchangeCodeForSession` を実行する。
 - マイページは `getSession` で未認証者をログイン画面へ戻し、Authセッションのメール・認証状態と、RLS経由の本人profile・同意履歴を表示する。
-- `signOut` でローカルを含む現在のセッションを終了する。
+- `signOut({ scope: "local" })` で操作中ブラウザのセッションだけを終了する。全端末ログアウトは行わない。
 - 成功・失敗表示はアカウントの存在を区別せず、メールアドレス、認証URL、code、access token、refresh tokenをconsoleへ出さない。
 - `legal_document_versions`、`profiles`、追記専用の `terms_acceptances`、新規ユーザーtrigger、既存ユーザーbackfillをmigration化した。
 - 本人SELECTだけを許可するRLSと、現行規約をDBから取得して同意履歴とprofileを同一トランザクションで更新する引数なしRPCを実装した。
@@ -183,6 +184,9 @@ flowchart LR
 - 認証コード、token hash、エラー情報を処理した直後に `history.replaceState` でURLから除去し、画面・console・分析基盤へ渡さない。
 - 認証ページでは `Referrer-Policy: no-referrer` 相当を適用し、認証処理中のURLを外部へ送らない。
 - 認証方式はメールのマジックリンク、トークン交換はPKCEとする。code verifierはリンク要求元ブラウザのストレージにあるため、原則として同じブラウザでリンクを開く必要がある。別端末・別ブラウザで失敗した場合は、利用するブラウザから再度リンクを要求するよう案内する。
+- `persistSession: true` と `autoRefreshToken: true` により、同じブラウザではログアウトしない限り通常セッションを保持する。ブラウザを閉じても通常は次回そのまま利用できるが、ログアウト、ブラウザデータの削除、セッションの無効化、別端末・別ブラウザでは再認証が必要になる。
+- ログインページはフォーム表示前に `getSession` で既存セッションを確認する。認証済みなら短い状態文を表示してマイページへ `replace` 遷移し、未認証または確認失敗ならフォームを表示する。この判定はUX上の経路制御だけに使い、DB認可はRLSを最終境界とする。
+- マイページのログアウトは `scope: "local"` を指定し、操作中ブラウザのセッションだけを終了する。全端末ログアウト機能は設けない。
 - access tokenとrefresh tokenをURL fragmentへ露出させるimplicit flowは採用候補から除外する。
 - 認証URL、access token、refresh token、PKCE verifier、認証コードをログへ出さない。URL全体をエラー監視へ送る設定も禁止する。
 
@@ -192,7 +196,7 @@ flowchart LR
 
 ```text
 .
-├── index.html                         # Phase 0。変更しない
+├── index.html                         # Phase 0。空き表示と静的なマイページ導線
 ├── data/                              # Phase 0公開データ・通知状態
 ├── scripts/                           # Phase 0スクレイパー
 ├── tests/                             # Phase 0回帰テスト
@@ -236,10 +240,10 @@ flowchart LR
 
 | 画面 | 相対URL | 公開範囲 | 主な状態 |
 | --- | --- | --- | --- |
-| 既存空き状況トップ | `./` | 公開 | Phase 0。変更しない |
+| 既存空き状況トップ | `./` | 公開 | Phase 0の空き表示と、マイページへの静的リンク |
 | 利用規約 | `legal/terms.html` | 公開 | 暫定案。一般公開前に内容、版番号、発効日を確認 |
 | プライバシーポリシー | `legal/privacy.html` | 公開 | 暫定案。一般公開前に取得項目、目的、保管、第三者提供、問い合わせを確認 |
-| 新規会員登録・ログイン | `auth/login.html` | 公開 | メール入力、規約同意、マジックリンク送信 |
+| 新規会員登録・ログイン | `auth/login.html` | 公開 | 既存セッション確認、メール入力、規約同意、マジックリンク送信 |
 | メール認証callback | `auth/callback.html` | 公開 | 処理中、成功、期限切れ、無効、再送 |
 | マイページ | `account/index.html` | 認証・有効会員限定 | 本人の状態、規約同意、ログアウト、退会導線 |
 
@@ -563,7 +567,7 @@ Pagesジョブは出力先だけを `--output _site/assets/config/auth-config.js
 - 認証情報をURLとログから除去する処理
 - マイページで本人情報だけを表示する処理
 
-公開設定、入力・同意、二重送信、一般化メッセージ、PKCE callback、URL消去、callback同意RPC、pending/activeマイページ、本人IDを指定しないRLS依存query、ログアウト、console非露出はPlaywrightとpytestで実装済みである。migrationのDDL・RLS・Grant・RPC・trigger・backfillは静的検査済みである。実メール、期限切れ・二回使用、実PostgreSQL上のRLS分離はSupabase環境での手動検証が残る。
+公開設定、入力・同意、二重送信、一般化メッセージ、ログインフォーム表示前のセッション確認、既存セッションからのマイページ遷移、PKCE callback、URL消去、callback同意RPC、pending/activeマイページ、本人IDを指定しないRLS依存query、ローカル範囲ログアウト、console非露出はPlaywrightとpytestで実装済みである。migrationのDDL・RLS・Grant・RPC・trigger・backfillは静的検査済みである。実メール、期限切れ・二回使用、実PostgreSQL上のRLS分離はSupabase環境での手動検証が残る。
 
 ### 19.2 DB・RLSテスト
 
@@ -659,7 +663,7 @@ Supabase採用、メールのマジックリンク認証、GitHub Pages継続、
 
 ### Step 6: ログイン・ログアウト・マイページ
 
-**実装済み。** `getSession` によるroute guard、Authセッションのメール・認証状態、本人profile、active/pending_terms状態、同意履歴、再同意UI、`signOut` を実装した。
+**実装済み。** `getSession` によるログイン画面の既存セッション検出とマイページのroute guard、Authセッションのメール・認証状態、本人profile、active/pending_terms状態、同意履歴、再同意UI、操作中ブラウザだけを対象とする `signOut({ scope: "local" })` を実装した。
 
 ### Step 7: 退会
 

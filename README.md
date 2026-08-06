@@ -38,7 +38,9 @@
 
 2026-08-04時点で、Supabase Auth、メールのマジックリンク認証、GitHub Pages、PKCEを正式方針としました。ブラウザは固定版 `@supabase/supabase-js@2.106.2` を使用し、公開Project URLとpublishable keyだけで接続します。`flowType: "pkce"`、`persistSession: true`、`autoRefreshToken: true` を明示しています。
 
-実装済みの範囲は、メール形式・利用規約同意の確認、`signInWithOtp` によるマジックリンク送信、codeの `exchangeCodeForSession`、認証URLの消去、`getSession` によるマイページ保護、会員profileと規約同意履歴の本人表示、現行規約への同意、`signOut` です。成功・失敗文言からアカウントの存在有無を推測しにくくし、メールアドレス・code・token・認証URLをconsoleへ出しません。
+実装済みの範囲は、メール形式・利用規約同意の確認、`signInWithOtp` によるマジックリンク送信、codeの `exchangeCodeForSession`、認証URLの消去、`getSession` によるログイン画面とマイページのセッション確認、会員profileと規約同意履歴の本人表示、現行規約への同意、現在のブラウザを対象にした `signOut({ scope: "local" })` です。成功・失敗文言からアカウントの存在有無を推測しにくくし、メールアドレス・code・token・認証URLをconsoleへ出しません。
+
+`persistSession: true` と `autoRefreshToken: true` により、ログアウトしない限り、同じブラウザでは通常セッションが保持されます。ログインページはフォーム表示前に既存セッションを確認し、ログイン済みならマイページへ移動します。ブラウザを閉じても通常は次回そのまま利用できますが、ログアウト、ブラウザデータの削除、セッションの無効化、別の端末やブラウザからの利用時には再認証が必要です。ログアウトは操作したブラウザのセッションだけを終了し、全端末ログアウトは行いません。このセッション確認は画面UXのためのもので、会員データの最終的な認可境界は引き続きPostgreSQLのRLSです。
 
 PKCEのcode verifierはリンクを要求したブラウザ側に保存されるため、マジックリンクは原則としてログイン操作を開始した同じブラウザで開く必要があります。別端末・別ブラウザで開いて認証に失敗した場合は、利用するブラウザでログイン画面から再送してください。
 

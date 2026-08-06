@@ -43,11 +43,34 @@
         </section>
 
         <section class="panel" aria-labelledby="form-title">
+          <p
+            class="notice"
+            data-login-session-status
+            aria-live="polite"
+            role="status"
+          >
+            ログイン状態を確認しています…
+          </p>
+          <noscript>
+            <style>
+              [data-login-session-status] { display: none; }
+            </style>
+            <p class="notice">
+              ログイン状態の確認とマジックリンクの送信にはJavaScriptが必要です。
+              JavaScriptを有効にして、このページを再読み込みしてください。
+            </p>
+          </noscript>
           <p class="notice">
             マジックリンクは、原則としてこの画面を開いた同じブラウザで開いてください。
           </p>
           <h2 id="form-title">マジックリンクを受け取る</h2>
-          <form data-auth-form novalidate>
+          <form data-auth-form novalidate hidden>
+            <p class="session-guidance">
+              一度ログインすると、このブラウザではログイン状態が保持されます。
+              共有端末では、利用後にログアウトしてください。
+              ログアウト、ブラウザデータの削除、セッションの無効化などの場合は
+              再ログインが必要です。
+            </p>
             <div class="field">
               <label for="email">メールアドレス</label>
               <input
@@ -69,9 +92,17 @@
                 を確認し、利用規約に同意します。
               </span>
             </label>
-            <button class="button" type="submit" disabled aria-describedby="form-note">
+            <button
+              class="button"
+              type="submit"
+              disabled
+              aria-describedby="form-note persistent-session-note"
+            >
               マジックリンクを送る
             </button>
+            <p id="persistent-session-note" class="form-note session-note">
+              通常、次回以降は同じブラウザでマジックリンクを再送する必要はありません。
+            </p>
             <p id="form-note" class="form-note">
               有効なメールアドレスを入力し、利用規約への同意を確認すると送信できます。
             </p>

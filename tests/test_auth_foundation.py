@@ -96,6 +96,7 @@ window.supabase = {
       auth: {
         signInWithOtp(payload) {
           window.__authCalls.push({ method: "signInWithOtp", payload });
+          window.sessionStorage.setItem("mock-sign-in-called", "true");
           return new Promise((resolve) => {
             window.setTimeout(
               () => resolve({ error: mock.signInError ? { name: "AuthError" } : null }),
@@ -110,9 +111,27 @@ window.supabase = {
         },
         async getSession() {
           window.__authCalls.push({ method: "getSession" });
+          const sessionLookupCount = Number(
+            window.sessionStorage.getItem("mock-session-lookup-count") || "0"
+          );
+          window.sessionStorage.setItem(
+            "mock-session-lookup-count",
+            String(sessionLookupCount + 1),
+          );
+          const form = document.querySelector("[data-auth-form]");
+          if (form) {
+            window.__formHiddenWhenGetSessionCalled = form.hidden;
+          }
+          if (mock.sessionDelay) {
+            await new Promise((resolve) => {
+              window.setTimeout(resolve, mock.sessionDelay);
+            });
+          }
           return {
             data: {
-              session: mock.sessionEmail
+              session:
+                mock.sessionEmail &&
+                !window.sessionStorage.getItem("mock-signed-out")
                 ? {
                     user: {
                       email: mock.sessionEmail,
@@ -124,9 +143,14 @@ window.supabase = {
             error: mock.sessionError ? { name: "AuthError" } : null,
           };
         },
-        async signOut() {
-          window.__authCalls.push({ method: "signOut" });
+        async signOut(options) {
+          window.__authCalls.push({ method: "signOut", options });
+          delete mock.sessionEmail;
           window.sessionStorage.setItem("mock-signed-out", "true");
+          window.sessionStorage.setItem(
+            "mock-sign-out-options",
+            JSON.stringify(options),
+          );
           return { error: mock.signOutError ? { name: "AuthError" } : null };
         },
       },
@@ -366,6 +390,10 @@ def test_auth_pages_load_only_pinned_supabase_sdk_and_do_not_submit_forms() -> N
     assert login.find("input", {"type": "email"})
     assert login.find("input", {"name": "terms-consent"})
     assert login.find("button", {"type": "submit"}).has_attr("disabled")
+    assert login.find("form", {"data-auth-form": True}).has_attr("hidden")
+    session_status = login.find(attrs={"data-login-session-status": True})
+    assert session_status["aria-live"] == "polite"
+    assert login.find("noscript")
 
 
 def test_auth_script_uses_pkce_and_does_not_log_credentials() -> None:
@@ -381,7 +409,10 @@ def test_auth_script_uses_pkce_and_does_not_log_credentials() -> None:
     assert "signInWithOtp" in script
     assert "exchangeCodeForSession" in script
     assert "getSession" in script
-    assert "signOut" in script
+    assert 'signOut({ scope: "local" })' in script
+    assert "localStorage" not in script
+    assert "access_token" not in script.lower()
+    assert "refresh_token" not in script.lower()
     assert "console." not in script
     assert "fetch(" not in script
 
@@ -857,6 +888,7 @@ def test_magic_link_submission_validates_input_prevents_duplicates_and_is_neutra
 
     calls = page.evaluate("window.__authCalls")
     assert calls == [
+        {"method": "getSession"},
         {
             "method": "signInWithOtp",
             "payload": {
@@ -890,6 +922,77 @@ def test_magic_link_submission_validates_input_prevents_duplicates_and_is_neutra
         "autoRefreshToken": True,
         "detectSessionInUrl": False,
     }
+
+
+def test_login_checks_session_before_revealing_form_and_shows_it_when_absent(
+    auth_page_loader,
+) -> None:
+    page, messages = auth_page_loader(
+        "auth/login.html",
+        {"sessionDelay": 500},
+    )
+    form = page.locator("[data-auth-form]")
+
+    assert form.is_hidden()
+    assert page.evaluate("window.__authCalls") == [{"method": "getSession"}]
+    assert page.evaluate("window.__formHiddenWhenGetSessionCalled") is True
+    assert "ログイン状態を確認しています" in page.locator(
+        "[data-login-session-status]"
+    ).inner_text()
+
+    form.wait_for(state="visible")
+    assert page.locator("[data-login-session-status]").is_hidden()
+    assert messages == []
+
+
+def test_login_with_existing_session_replaces_route_without_sending_magic_link(
+    auth_page_loader,
+) -> None:
+    page, messages = auth_page_loader(
+        "auth/login.html",
+        {"sessionEmail": "member@example.test"},
+    )
+
+    page.wait_for_function(
+        """() => document.querySelector("[data-login-session-status]")
+          .textContent.includes("ログイン済みです")"""
+    )
+    assert page.locator("[data-auth-form]").is_hidden()
+    page.wait_for_url("http://pages.test/project/account/index.html")
+    page.locator("[data-account-content]:not([hidden])").wait_for()
+
+    assert page.evaluate(
+        'window.sessionStorage.getItem("mock-session-lookup-count")'
+    ) == "2"
+    assert page.evaluate(
+        'window.sessionStorage.getItem("mock-sign-in-called")'
+    ) is None
+    assert "window.location.replace(ACCOUNT_PATH)" in read(
+        "assets/js/auth-foundation.js"
+    )
+    assert messages == []
+
+
+def test_login_session_check_failure_keeps_magic_link_form_usable(
+    auth_page_loader,
+) -> None:
+    page, messages = auth_page_loader(
+        "auth/login.html",
+        {"sessionError": True},
+    )
+    form = page.locator("[data-auth-form]")
+    form.wait_for(state="visible")
+
+    status = page.locator('[data-login-session-status][data-state="error"]')
+    assert "ログイン状態を確認できませんでした" in status.inner_text()
+    page.locator('input[name="email"]').fill("member@example.test")
+    page.locator('input[name="terms-consent"]').check()
+    page.locator('button[type="submit"]').click()
+    page.locator('[data-form-status][data-state="success"]').wait_for()
+
+    methods = [call["method"] for call in page.evaluate("window.__authCalls")]
+    assert methods == ["getSession", "signInWithOtp"]
+    assert messages == []
 
 
 def test_pkce_callback_exchanges_code_scrubs_url_and_opens_account(
@@ -990,6 +1093,9 @@ def test_account_checks_session_displays_email_and_signs_out(
     assert page.evaluate(
         'window.sessionStorage.getItem("mock-signed-out")'
     ) == "true"
+    assert page.evaluate(
+        'JSON.parse(window.sessionStorage.getItem("mock-sign-out-options"))'
+    ) == {"scope": "local"}
     assert messages == []
 
 
