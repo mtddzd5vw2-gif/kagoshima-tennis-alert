@@ -22,6 +22,9 @@ EXPECTED_FACILITIES = {
     "sumizei": "SuMIzeiテニスコート",
     "toukai-tennis": "東開庭球場",
 }
+NOTIFICATION_MIGRATION_HASH = (
+    "8f28ec3d2ba245a9360002ed971ac954957e6078e427ec1d3662be3604b41581"
+)
 IMMUTABLE_MIGRATION_HASHES = {
     "20260804000000_create_member_profiles.sql": (
         "f55877aed328b98cd05ce17c92998b9fbb6f7dfc66ca72abbedf533010121056"
@@ -68,10 +71,15 @@ def policy_definition(sql: str, table: str, action: str) -> str:
     return compact(match.group(1))
 
 
-def test_notification_rule_migration_is_newest_and_defines_six_tables() -> None:
+def test_notification_rule_migration_defines_six_tables_before_save_rpc() -> None:
     migration = notification_migration_path()
+    save_rpc_migration = (
+        MIGRATION_DIR / "20260807100000_add_notification_rule_save_rpc.sql"
+    )
 
     assert migration.name == "20260807000000_create_notification_rules.sql"
+    assert save_rpc_migration.is_file()
+    assert migration.name[:14] < save_rpc_migration.name[:14]
     assert all(
         migration.name[:14] > existing_name[:14]
         for existing_name in IMMUTABLE_MIGRATION_HASHES
@@ -309,7 +317,11 @@ def test_phase_two_design_documents_boundaries_and_incomplete_rules() -> None:
         "条件数上限",
         "施設1件以上",
         "曜日1件以上",
-        "本番Supabaseへ未適用",
+        "save_notification_rule",
+        "security invoker",
+        "進行中",
+        "照合ロジックは未実装",
+        "自動適用されない",
     ):
         assert expected in design
 
@@ -321,6 +333,13 @@ def test_existing_migration_content_remains_unchanged() -> None:
         )
         digest = hashlib.sha256(normalized_bytes).hexdigest()
         assert digest == expected_hash
+
+    notification_bytes = notification_migration_path().read_bytes().replace(
+        b"\r\n", b"\n"
+    )
+    assert hashlib.sha256(notification_bytes).hexdigest() == (
+        NOTIFICATION_MIGRATION_HASH
+    )
 
 
 def test_phase_zero_data_ui_scraper_and_actions_are_not_modified() -> None:
@@ -336,10 +355,9 @@ def test_phase_zero_data_ui_scraper_and_actions_are_not_modified() -> None:
         ".github/workflows/update-availability.yml",
         "data/availability.json",
         "data/notification-state.json",
+        "index.html",
         "scripts/scrape.py",
+        "assets/js/auth-foundation.js",
     }
 
     assert changed_paths.isdisjoint(forbidden_exact)
-    assert not any(
-        path.endswith((".html", ".js", ".css")) for path in changed_paths
-    )

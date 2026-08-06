@@ -10,6 +10,8 @@
   --warning-bg: #fff6d8;
   --warning-line: #e8cc69;
   --danger: #a4382a;
+  --danger-bg: #fff1ee;
+  --success-bg: #eaf7f1;
   --shadow: 0 18px 45px rgba(23, 49, 43, 0.1);
   font-family:
     "Hiragino Sans", "Yu Gothic UI", "Yu Gothic", Meiryo, sans-serif;
@@ -45,6 +47,15 @@ a:hover {
 button,
 input {
   font: inherit;
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+fieldset:focus-visible,
+[tabindex="-1"]:focus-visible {
+  outline: 3px solid rgba(20, 122, 91, 0.28);
+  outline-offset: 3px;
 }
 
 .site-header {
@@ -187,6 +198,11 @@ h3 {
   border-color: var(--accent);
 }
 
+.field input[aria-invalid="true"] {
+  border-color: var(--danger);
+  background: var(--danger-bg);
+}
+
 .consent {
   display: flex;
   align-items: flex-start;
@@ -233,8 +249,23 @@ h3 {
   background: var(--surface);
 }
 
+.button--secondary:hover {
+  color: var(--ink);
+  background: var(--soft);
+}
+
 .button--danger {
   background: var(--danger);
+}
+
+.button--danger:hover {
+  background: #7e2b21;
+}
+
+.button--compact {
+  min-height: 2.6rem;
+  padding: 0.5rem 0.9rem;
+  font-size: 0.9rem;
 }
 
 .button-row {
@@ -284,7 +315,8 @@ h3 {
 
 .status-text[data-state="error"],
 [data-callback-status][data-state="error"],
-[data-account-loading][data-state="error"] {
+[data-account-loading][data-state="error"],
+[data-notification-loading][data-state="error"] {
   color: var(--danger);
   font-weight: 700;
 }
@@ -370,9 +402,249 @@ h3 {
   gap: 0.75rem 1rem;
 }
 
+.notification-page-heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1.5rem;
+  margin-bottom: 1.75rem;
+}
+
+.page-links {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.membership-guidance {
+  border-color: var(--warning-line);
+}
+
+.notification-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin: 1.5rem 0 0.5rem;
+}
+
+.notification-toolbar h2,
+.notification-toolbar p {
+  margin-block: 0;
+}
+
+.notification-status {
+  margin-block: 0.5rem 1rem;
+}
+
+.rule-form-panel {
+  margin-block: 1rem 1.5rem;
+}
+
+.rule-form-panel > h2 {
+  margin-bottom: 0.35rem;
+}
+
+.rule-fieldset {
+  min-width: 0;
+  margin: 0 0 1.25rem;
+  border: 1px solid var(--line);
+  border-radius: 0.9rem;
+  padding: 1rem;
+}
+
+.rule-fieldset[aria-invalid="true"] {
+  border-color: var(--danger);
+  background: var(--danger-bg);
+}
+
+.rule-fieldset legend {
+  padding-inline: 0.35rem;
+  font-weight: 800;
+}
+
+.field-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.field-grid .field {
+  margin-bottom: 0;
+}
+
+.checkbox-grid {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.checkbox-grid--facilities {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.checkbox-grid--weekdays {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.check-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+  min-height: 2.8rem;
+  border: 1px solid var(--line);
+  border-radius: 0.75rem;
+  padding: 0.65rem 0.75rem;
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.check-option:hover {
+  border-color: #98afa7;
+}
+
+.check-option:has(input:focus-visible) {
+  outline: 3px solid rgba(20, 122, 91, 0.2);
+  border-color: var(--accent);
+}
+
+.check-option:has(input:checked) {
+  border-color: var(--accent);
+  background: var(--success-bg);
+}
+
+.check-option:has(input:disabled) {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.check-option input {
+  width: 1.15rem;
+  height: 1.15rem;
+  margin: 0.25rem 0 0;
+  flex: 0 0 auto;
+  accent-color: var(--accent);
+}
+
+.check-option--enabled {
+  max-width: 32rem;
+  margin-top: 0.25rem;
+}
+
+.check-option--enabled span {
+  display: grid;
+  gap: 0.1rem;
+}
+
+.check-option--enabled small {
+  color: var(--muted);
+}
+
+.form-errors {
+  margin-bottom: 1.25rem;
+  border: 1px solid var(--danger);
+  border-radius: 0.75rem;
+  padding: 0.85rem 1rem;
+  color: var(--danger);
+  background: var(--danger-bg);
+}
+
+.form-errors__title {
+  margin: 0;
+  font-weight: 800;
+}
+
+.form-errors ul {
+  margin-block: 0.4rem 0;
+  padding-left: 1.3rem;
+}
+
+.notification-rule-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.rule-card {
+  display: flex;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 1rem;
+  padding: clamp(1.1rem, 3vw, 1.5rem);
+  background: var(--surface);
+  box-shadow: 0 10px 28px rgba(23, 49, 43, 0.07);
+  flex-direction: column;
+}
+
+.rule-card__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.rule-card__title {
+  margin: 0 0 0.65rem;
+  overflow-wrap: anywhere;
+  font-size: 1.2rem;
+}
+
+.rule-state {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0.2rem 0.65rem;
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.rule-state--enabled {
+  color: var(--accent-dark);
+  background: var(--success-bg);
+}
+
+.rule-state--paused {
+  color: var(--muted);
+  background: #edf1ef;
+}
+
+.rule-details {
+  display: grid;
+  grid-template-columns: minmax(6.5rem, 0.55fr) minmax(0, 1.45fr);
+  gap: 0.55rem 0.8rem;
+  margin-block: 1.25rem;
+}
+
+.rule-details dt {
+  color: var(--muted);
+  font-size: 0.88rem;
+  font-weight: 700;
+}
+
+.rule-details dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 0.92rem;
+  font-weight: 700;
+}
+
+.rule-card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin-top: auto;
+  padding-top: 0.25rem;
+}
+
+.empty-state {
+  text-align: center;
+}
+
 @media (max-width: 48rem) {
   .auth-layout,
-  .account-grid {
+  .account-grid,
+  .notification-rule-list,
+  .field-grid {
     grid-template-columns: 1fr;
   }
 
@@ -389,5 +661,34 @@ h3 {
 
   .definition-list dd + dt {
     margin-top: 0.75rem;
+  }
+
+  .notification-page-heading,
+  .notification-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .page-links .button,
+  .notification-toolbar > .button {
+    width: 100%;
+  }
+
+  .checkbox-grid--facilities,
+  .checkbox-grid--weekdays {
+    grid-template-columns: 1fr;
+  }
+
+  .rule-details {
+    grid-template-columns: 1fr;
+    gap: 0.1rem;
+  }
+
+  .rule-details dd + dt {
+    margin-top: 0.65rem;
+  }
+
+  .rule-card__actions .button {
+    flex: 1 1 auto;
   }
 }

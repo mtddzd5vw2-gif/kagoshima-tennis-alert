@@ -3,7 +3,7 @@
 ## 1. 文書の目的
 
 本書は、Tennis Court Watcherの利用者向け機能、主要データ、認証・認可、システム責務、拡張方針を定義する。
-現行の空き監視をPhase 0、完成済みの会員基盤をPhase 1として扱う。次に着手するのはPhase 2の通知条件設定である。
+現行の空き監視をPhase 0、完成済みの会員基盤をPhase 1として扱う。Phase 2の通知条件設定は進行中である。
 開発順序とPhaseごとの完了条件は[Development Roadmap](./DEVELOPMENT_ROADMAP.md)を参照する。
 
 「案」と記載した項目は設計候補であり、未確定事項は**要決定**と明記する。
@@ -73,7 +73,7 @@ Phase 1のUC-04〜UC-07のうち、会員登録、認証メール、ログイン
 
 ## 5. 画面一覧
 
-Phase 1の画面名とURLは、GitHub Pagesのリポジトリ配下で動く相対パスとして2026-08-04に決定した。Phase 2以降のURLは案であり、実装時に**要決定**。
+Phase 1の画面名とURLは、GitHub Pagesのリポジトリ配下で動く相対パスとして2026-08-04に決定した。Phase 2の通知条件は一覧と編集フォームを `account/notifications.html` に統合した。Phase 3以降のURLは案であり、実装時に**要決定**。
 
 | 画面 | URL案 | 公開範囲 | Phase | 主な内容 |
 | --- | --- | --- | --- | --- |
@@ -83,8 +83,7 @@ Phase 1の画面名とURLは、GitHub Pagesのリポジトリ配下で動く相�
 | 会員登録・ログイン | `auth/login.html` | 公開 | 1 | メールアドレス、規約同意、マジックリンク送信 |
 | メール認証結果 | `auth/callback.html` | 公開 | 1 | 認証成功、期限切れ、無効リンク、再送導線 |
 | マイページ | `account/index.html` | 会員限定 | 1 | 会員状態、メール認証状態、規約同意状態、ログアウト、退会導線 |
-| 通知条件一覧 | `/mypage/notification-rules` | 会員限定 | 2 | 条件一覧、稼働状態、作成・編集・削除 |
-| 通知条件編集 | `/mypage/notification-rules/:id` | 会員限定 | 2 | 施設、曜日、日付範囲、時間帯、最低連続時間、有効・停止状態 |
+| 通知条件 | `account/notifications.html` | active会員限定 | 2 | 条件一覧、作成・編集・一時停止・有効化・削除、施設、曜日、日付範囲、時間帯、最低連続時間 |
 | 通知履歴 | `/mypage/notifications` | 会員限定 | 3候補 | 送信履歴。MVPに含めるか**要決定** |
 | LINE連携 | `/mypage/line` | 会員限定 | 4 | 連携状態、連携開始、解除 |
 | プラン・支払い | `/mypage/billing` | 会員限定 | 5 | 現在のプラン、申込、解約、請求状態 |
@@ -210,12 +209,12 @@ Phase 1はマジックリンク認証を採用するため、パスワードの�
 - ログアウト
 - 退会は準備中表示
 - 問い合わせ先
+- Phase 2の通知条件画面への導線
 
 メールアドレス変更機能をPhase 1に含めるかは**要決定**。
 
 ### 10.2 後続Phaseで追加する情報
 
-- 通知条件と有効・停止状態
 - メール・LINEの通知チャネル状態
 - LINE連携状態
 - 通知履歴
@@ -229,7 +228,7 @@ Phase 1はマジックリンク認証を採用するため、パスワードの�
 
 ## 11. 通知条件
 
-通知条件設定はPhase 2で提供する。Phase 2は条件の保存・編集・停止と、空き候補に対する照合結果の生成までを責務とし、利用者別メールの実送信は行わない。
+通知条件設定はPhase 2で提供し、現在は進行中である。通知条件の一覧・新規作成・編集・一時停止・有効化・削除UIと原子的保存RPCは実装済みである。Phase 2は条件管理と空き候補に対する照合結果の生成までを責務とするが、照合ロジックは未実装である。Phase 3の利用者別メール実送信も未実装である。
 
 ### 11.1 確定データ構造
 
@@ -245,6 +244,8 @@ Phase 1はマジックリンク認証を採用するため、パスワードの�
 
 条件数上限と無料プランの上限、利用者が設定可能な最大期間は**要決定**であり、今回のデータモデルでは制限しない。通知チャネル、配信キュー、再試行、配信停止、通知履歴はPhase 3以降の責務であり、Phase 2の通知条件には含めない。
 
+通知条件UIは、active会員本人の条件だけをRLS配下で読み込み、施設1件以上・曜日1件以上を含む入力検証を行う。作成と編集は `save_notification_rule` RPCを使用し、条件本体・施設・曜日を1トランザクションで保存する。RPCは利用者ID引数を受け取らず、`security invoker`、`auth.uid()`、`set search_path = ''`、既存RLSを維持する。一時停止と有効化は本人行の `is_enabled` 更新、削除は本人行のDELETEを使用する。不完全な条件はUIから有効化しない。
+
 現行の「直近15日間、土日祝、8:00〜13:00、1時間以上」はPhase 0の監視範囲である。
 
 ### 11.2 照合ルール
@@ -257,7 +258,7 @@ Phase 1はマジックリンク認証を採用するため、パスワードの�
 
 ## 12. メール通知
 
-利用者別メール通知はPhase 3で提供する。現行のResendはPhase 1認証メールの送信チャネルである。Phase 3でResendを継続利用するかを含む配信設計はPhase 3の開始時に決定し、Phase 1の認証メールとは目的、テンプレート、配信停止、送信処理を明確に分ける。
+利用者別メール通知はPhase 3で提供する予定であり、実送信は未実装である。現行のResendはPhase 1認証メールの送信チャネルである。Phase 3でResendを継続利用するかを含む配信設計はPhase 3の開始時に決定し、Phase 1の認証メールとは目的、テンプレート、配信停止、送信処理を明確に分ける。
 
 ### 12.1 通知内容
 
@@ -343,6 +344,8 @@ Phase 1会員・規約テーブルに加え、Phase 2の地域・施設マスタ
 
 Phase 2の初期データは鹿児島市とテニスコート種別、鴨池県営テニスコート、SuMIzeiテニスコート、東開庭球場である。予約対象リソース、取得元、取得実行、空き枠のDBモデルは後続の候補であり、今回実装しない。現在の `availability.json` と `notification-state.json` は変更・廃止しない。
 
+Phase 2のテーブル・RLS・初期マスターと `save_notification_rule` RPCはmigrationとしてリポジトリへ追加している。リポジトリへの追加だけではSupabase環境へ自動適用されないため、適用状況は対象環境ごとのmigration履歴で確認する。
+
 ### 15.3 通知
 
 | エンティティ | 主な項目 | 備考 |
@@ -391,6 +394,7 @@ Phase 2の初期データは鹿児島市とテニスコート種別、鴨池県�
 - `legal_document_versions`: authenticated利用者はcurrentのtermsだけをSELECT可能。anonにはDB権限を与えない。
 - `accept_current_terms()` はauthenticatedだけがEXECUTEでき、anonとPUBLICから実行権限を剥奪する。
 - `notification_rules`と関連表: `authenticated` のうち、本人かつ `profiles.membership_status = 'active'` の利用者だけがCRUD可能。条件数上限は未決定・未実装である。
+- `save_notification_rule()` は `security invoker` と既存RLSのまま動作し、`auth.uid()` で本人を確定する。PUBLICとanonから実行権限を剥奪し、authenticatedだけにEXECUTEを許可する。
 - `notification_events`: 本人は必要な表示項目だけ参照可能。生成・状態更新は通知エンジンに限定する。
 - `regions`、`facility_types`、`facilities`: `authenticated` はSELECTのみ可能とし、`anon` にはDB参照権限を与えない。ブラウザroleによるINSERT、UPDATE、DELETEは許可しない。
 

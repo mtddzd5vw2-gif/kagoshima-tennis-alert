@@ -19,12 +19,14 @@ STATIC_PAGES = (
     Path("auth/login.html"),
     Path("auth/callback.html"),
     Path("account/index.html"),
+    Path("account/notifications.html"),
     Path("legal/terms.html"),
     Path("legal/privacy.html"),
 )
 STATIC_ASSETS = (
     Path("assets/css/auth.css"),
     Path("assets/js/auth-foundation.js"),
+    Path("assets/js/notification-rules.js"),
     Path("assets/config/auth-config.example.js"),
     Path("scripts/generate_auth_config.py"),
 )
