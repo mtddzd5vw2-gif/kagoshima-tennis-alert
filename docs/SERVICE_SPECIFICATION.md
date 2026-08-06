@@ -84,7 +84,7 @@ Phase 1の画面名とURLは、GitHub Pagesのリポジトリ配下で動く相�
 | メール認証結果 | `auth/callback.html` | 公開 | 1 | 認証成功、期限切れ、無効リンク、再送導線 |
 | マイページ | `account/index.html` | 会員限定 | 1 | 会員状態、メール認証状態、規約同意状態、ログアウト、退会導線 |
 | 通知条件一覧 | `/mypage/notification-rules` | 会員限定 | 2 | 条件一覧、稼働状態、作成・編集・削除 |
-| 通知条件編集 | `/mypage/notification-rules/:id` | 会員限定 | 2 | 地域、施設、曜日、時間帯、最小時間、チャネル |
+| 通知条件編集 | `/mypage/notification-rules/:id` | 会員限定 | 2 | 施設、曜日、日付範囲、時間帯、最低連続時間、有効・停止状態 |
 | 通知履歴 | `/mypage/notifications` | 会員限定 | 3候補 | 送信履歴。MVPに含めるか**要決定** |
 | LINE連携 | `/mypage/line` | 会員限定 | 4 | 連携状態、連携開始、解除 |
 | プラン・支払い | `/mypage/billing` | 会員限定 | 5 | 現在のプラン、申込、解約、請求状態 |
@@ -231,18 +231,21 @@ Phase 1はマジックリンク認証を採用するため、パスワードの�
 
 通知条件設定はPhase 2で提供する。Phase 2は条件の保存・編集・停止と、空き候補に対する照合結果の生成までを責務とし、利用者別メールの実送信は行わない。
 
-### 11.1 条件案
+### 11.1 確定データ構造
 
-- 対象地域
-- 対象施設（1件以上）
-- 対象曜日
-- 特定日または検索対象期間
-- 開始可能時刻と終了希望時刻
-- 最小連続利用時間
-- 通知チャネル
-- 条件の有効・一時停止状態
+- 条件本体は `notification_rules` に保存し、`auth.users.id` を所有者とする。
+- 条件名は空白不可・80文字以内とする。
+- 対象施設は `notification_rule_facilities`、対象曜日は `notification_rule_weekdays` に複数登録する。
+- 曜日はISO 8601の1（月曜日）〜7（日曜日）で保存する。
+- `date_from` は対象開始日、`date_to` は対象終了日とする。`date_from = null` は開始日の下限なし、`date_to = null` は終了日の上限なしを表す。
+- `start_time < end_time` とし、時刻は対象施設が属する地域の `regions.timezone` で評価する。
+- 最低連続時間は30〜720分の30分単位とする。
+- `is_enabled` は有効・一時停止状態を表し、子テーブル登録前の不完全な条件を誤って有効扱いしないよう初期値を `false` とする。
+- DB上は施設または曜日が0件の不完全な条件を保存できる。UIでは施設1件以上・曜日1件以上を必須検証し、照合処理では0件の条件を無効として扱う。
 
-現行の「直近15日間、土日祝、8:00〜13:00、1時間以上」はPhase 0の監視範囲である。利用者が設定可能な最大期間、時間粒度、条件数は**要決定**。
+条件数上限と無料プランの上限、利用者が設定可能な最大期間は**要決定**であり、今回のデータモデルでは制限しない。通知チャネル、配信キュー、再試行、配信停止、通知履歴はPhase 3以降の責務であり、Phase 2の通知条件には含めない。
+
+現行の「直近15日間、土日祝、8:00〜13:00、1時間以上」はPhase 0の監視範囲である。
 
 ### 11.2 照合ルール
 
@@ -315,9 +318,9 @@ Phase 1はマジックリンク認証を採用するため、パスワードの�
 
 有料化前に、決済事業者、価格、税、返金、解約、支払い失敗、特定商取引法等の表示、無料利用者の既存データの扱いを決定する。
 
-## 15. データモデル案
+## 15. データモデル
 
-Phase 1会員・規約テーブルはmigrationで確定済みである。後続Phaseの施設・通知・課金は引き続き論理モデル案とする。
+Phase 1会員・規約テーブルに加え、Phase 2の地域・施設マスターと通知条件テーブルをmigrationで確定した。配信、通知履歴、課金などPhase 3以降のモデルは引き続き論理モデル案とする。
 
 ### 15.1 会員・規約
 
@@ -334,28 +337,25 @@ Phase 1会員・規約テーブルはmigrationで確定済みである。後続P
 
 | エンティティ | 主な項目 | 備考 |
 | --- | --- | --- |
-| `regions` | `id`, `country_code`, `prefecture_code`, `municipality_code`, `name`, `timezone` | GPSに依存しない地域マスター |
-| `facility_types` | `id`, `code`, `name` | tennis_court、gymnasium等 |
-| `facilities` | `id`, `region_id`, `facility_type_id`, `name`, `reservation_url`, `source_id`, `active` | 施設 |
-| `resources` | `id`, `facility_id`, `source_key`, `name`, `attributes` | コート、面、室などの予約単位 |
-| `source_systems` | `id`, `adapter_type`, `base_url`, `timezone`, `policy_status` | 取得元とアダプター |
-| `scrape_runs` | `id`, `source_id`, `started_at`, `finished_at`, `status`, `error_type` | 実行状態。個人情報を含めない |
-| `availability_slots` | `id`, `resource_id`, `starts_at`, `ends_at`, `status`, `observed_at`, `source_url`, `stable_key` | 正規化した空き候補 |
+| `regions` | `id`, `country_code`, `prefecture_code`, `municipality_code`, `name`, `timezone`, `is_active`, `sort_order`, `created_at` | GPSに依存しない地域マスター |
+| `facility_types` | `id`, `name`, `is_active`, `sort_order`, `created_at` | 初期値は `tennis-court` |
+| `facilities` | `id`, `region_id`, `facility_type_id`, `name`, `is_active`, `sort_order`, `created_at` | IDは `availability.json.facility_id` と一致 |
 
-現在の `availability.json` と `notification-state.json` を直ちに廃止することはしない。データベースへの移行・併用方法は、Phase 0のPagesと既存LINE通知を壊さない形で**要決定**。
+Phase 2の初期データは鹿児島市とテニスコート種別、鴨池県営テニスコート、SuMIzeiテニスコート、東開庭球場である。予約対象リソース、取得元、取得実行、空き枠のDBモデルは後続の候補であり、今回実装しない。現在の `availability.json` と `notification-state.json` は変更・廃止しない。
 
 ### 15.3 通知
 
 | エンティティ | 主な項目 | 備考 |
 | --- | --- | --- |
-| `notification_rules` | `id`, `user_id`, `name`, `enabled`, `date_from`, `date_to`, `time_start`, `time_end`, `minimum_duration_minutes` | 利用者の基本条件 |
-| `notification_rule_facilities` | `rule_id`, `facility_id` | 複数施設との関連 |
-| `notification_rule_weekdays` | `rule_id`, `weekday` | 曜日条件 |
-| `notification_channels` | `id`, `user_id`, `type`, `enabled`, `verified_at`, `status` | email、line等 |
-| `notification_events` | `id`, `user_id`, `slot_id`, `channel_id`, `rule_id`, `status`, `idempotency_key`, `created_at`, `sent_at` | 重複防止と配信状態 |
-| `line_links` | `user_id`, `line_user_id_encrypted`, `status`, `linked_at`, `unlinked_at` | Phase 4。保存方法は**要決定** |
+| `notification_rules` | `id`, `user_id`, `name`, `is_enabled`, `date_from`, `date_to`, `start_time`, `end_time`, `minimum_duration_minutes`, `created_at`, `updated_at` | Phase 2の利用者条件本体 |
+| `notification_rule_facilities` | `rule_id`, `user_id`, `facility_id`, `created_at` | 複数施設との関連。複合外部キーで所有者を整合 |
+| `notification_rule_weekdays` | `rule_id`, `user_id`, `weekday`, `created_at` | ISO 8601曜日1〜7。複合外部キーで所有者を整合 |
 
-### 15.4 課金
+`notification_channels`、`notification_events` はPhase 3以降、`line_links` はPhase 4の論理モデル候補であり、今回実装しない。
+
+詳細は [Phase 2 通知条件データモデル設計](./PHASE2_NOTIFICATION_RULES_DESIGN.md)を参照する。
+
+### 15.4 課金案
 
 | エンティティ | 主な項目 | 備考 |
 | --- | --- | --- |
@@ -383,16 +383,16 @@ Phase 1会員・規約テーブルはmigrationで確定済みである。後続P
 - 管理用Service Role等はサーバー処理だけで使用し、ブラウザ、Pages、リポジトリへ含めない。
 - 管理者権限の付与、監査、緊急停止方法は**要決定**。
 
-### 16.3 Phase 1 RLS
+### 16.3 Phase 1・Phase 2 RLS
 
-- 3つのpublicテーブルすべてでRLSを有効にする。
+- Phase 1の3つのpublicテーブルと、Phase 2で追加する6テーブルすべてでRLSを有効にする。
 - `profiles`: `id = auth.uid()` の本人だけがSELECT可能。ブラウザからのINSERT/UPDATE/DELETEは許可しない。
 - `terms_acceptances`: `user_id = auth.uid()` の本人だけがSELECT可能。ブラウザからのINSERT/UPDATE/DELETEは許可しない。
 - `legal_document_versions`: authenticated利用者はcurrentのtermsだけをSELECT可能。anonにはDB権限を与えない。
 - `accept_current_terms()` はauthenticatedだけがEXECUTEでき、anonとPUBLICから実行権限を剥奪する。
-- `notification_rules`と関連表: 本人だけがCRUD可能。プラン上限はサーバー側でも検証する。
+- `notification_rules`と関連表: `authenticated` のうち、本人かつ `profiles.membership_status = 'active'` の利用者だけがCRUD可能。条件数上限は未決定・未実装である。
 - `notification_events`: 本人は必要な表示項目だけ参照可能。生成・状態更新は通知エンジンに限定する。
-- 施設マスター: 公開可能な列だけ匿名参照を許可し、更新は運用者に限定する。
+- `regions`、`facility_types`、`facilities`: `authenticated` はSELECTのみ可能とし、`anon` にはDB参照権限を与えない。ブラウザroleによるINSERT、UPDATE、DELETEは許可しない。
 
 ## 17. 個人情報とセキュリティ
 
