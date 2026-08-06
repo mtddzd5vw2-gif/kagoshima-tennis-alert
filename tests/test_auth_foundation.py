@@ -32,6 +32,14 @@ SUPABASE_JS_URL = (
     "https://cdn.jsdelivr.net/npm/"
     "@supabase/supabase-js@2.106.2/dist/umd/supabase.js"
 )
+MEMBER_MIGRATIONS = tuple(
+    (ROOT / "supabase/migrations").glob("*_create_member_profiles.sql")
+)
+ACCEPT_TERMS_FIX_MIGRATION = (
+    ROOT
+    / "supabase/migrations"
+    / "20260806000000_fix_accept_current_terms_conflict.sql"
+)
 MOCK_AUTH_CONFIG = """window.TCW_AUTH_CONFIG = Object.freeze({
   supabaseUrl: "https://project.example.supabase.co",
   supabasePublishableKey: "sb_publishable_test_public_only",
@@ -43,7 +51,47 @@ window.supabase = {
   createClient(url, key, options) {
     window.__clientArguments = { url, key, options };
     window.__authCalls = window.__authCalls || [];
+    window.__dataCalls = window.__dataCalls || [];
     const mock = window.__mockAuth || {};
+    const currentVersion = mock.currentVersion || "2026-08-04-draft";
+    const acceptedAt = mock.acceptedAt || "2026-08-04T01:30:00Z";
+
+    function resultFor(table) {
+      if (table === "profiles") {
+        return {
+          data: {
+            membership_status: mock.profileStatus || "active",
+            latest_terms_version:
+              mock.latestTermsVersion === null
+                ? null
+                : (mock.latestTermsVersion || currentVersion),
+            latest_terms_accepted_at:
+              mock.latestTermsVersion === null ? null : acceptedAt,
+            created_at: "2026-08-04T00:00:00Z",
+          },
+          error: mock.profileError ? { name: "PostgrestError" } : null,
+        };
+      }
+      if (table === "terms_acceptances") {
+        const defaultAcceptances = [{
+          document_type: "terms",
+          version: currentVersion,
+          accepted_at: acceptedAt,
+          source: "web",
+        }];
+        return {
+          data: mock.acceptances === undefined
+            ? defaultAcceptances
+            : mock.acceptances,
+          error: mock.acceptancesError ? { name: "PostgrestError" } : null,
+        };
+      }
+      return {
+        data: { version: currentVersion, effective_at: "2026-08-04T00:00:00+09:00" },
+        error: mock.currentDocumentError ? { name: "PostgrestError" } : null,
+      };
+    }
+
     return {
       auth: {
         signInWithOtp(payload) {
@@ -65,7 +113,12 @@ window.supabase = {
           return {
             data: {
               session: mock.sessionEmail
-                ? { user: { email: mock.sessionEmail } }
+                ? {
+                    user: {
+                      email: mock.sessionEmail,
+                      email_confirmed_at: "2026-08-04T00:00:00Z",
+                    },
+                  }
                 : null,
             },
             error: mock.sessionError ? { name: "AuthError" } : null,
@@ -76,6 +129,47 @@ window.supabase = {
           window.sessionStorage.setItem("mock-signed-out", "true");
           return { error: mock.signOutError ? { name: "AuthError" } : null };
         },
+      },
+      from(table) {
+        const call = { table, filters: [] };
+        window.__dataCalls.push(call);
+        const query = {
+          select(columns) {
+            call.columns = columns;
+            return query;
+          },
+          eq(column, value) {
+            call.filters.push({ column, value });
+            return query;
+          },
+          async single() {
+            return resultFor(table);
+          },
+          async order(column, options) {
+            call.order = { column, options };
+            return resultFor(table);
+          },
+        };
+        return query;
+      },
+      async rpc(name) {
+        window.__authCalls.push({ method: "rpc", name });
+        window.sessionStorage.setItem("mock-rpc-called", name);
+        if (mock.rpcError) {
+          return { data: null, error: { name: "PostgrestError" } };
+        }
+        mock.profileStatus = "active";
+        mock.latestTermsVersion = currentVersion;
+        mock.acceptances = [{
+          document_type: "terms",
+          version: currentVersion,
+          accepted_at: acceptedAt,
+          source: "web",
+        }];
+        return {
+          data: [{ version: currentVersion, accepted_at: acceptedAt }],
+          error: null,
+        };
       },
     };
   },
@@ -116,7 +210,16 @@ def auth_page_loader(browser: Browser):
         messages: list[str] = []
         page.on("console", lambda message: messages.append(message.text))
         page.add_init_script(
-            script=f"window.__mockAuth = {json.dumps(mock or {})};"
+            script=f"""
+              window.__mockAuth = {json.dumps(mock or {})};
+              if (
+                window.__mockAuth.pendingTerms &&
+                !window.sessionStorage.getItem("mock-pending-initialized")
+              ) {{
+                window.sessionStorage.setItem("tcw.pendingTermsAcceptance", "1");
+                window.sessionStorage.setItem("mock-pending-initialized", "1");
+              }}
+            """
         )
 
         def route_request(route) -> None:
@@ -289,6 +392,247 @@ def test_legal_pages_are_explicitly_drafts_requiring_review() -> None:
         assert "暫定案" in text
         assert "一般公開前" in text
         assert "内容確認が必要" in text
+
+
+def test_member_profile_migration_defines_required_tables_and_data_minimization() -> None:
+    assert len(MEMBER_MIGRATIONS) == 1
+    migration = MEMBER_MIGRATIONS[0].read_text(encoding="utf-8").lower()
+    profiles = re.search(
+        r"create table public\.profiles\s*\((.*?)\n\);",
+        migration,
+        re.DOTALL,
+    )
+
+    assert profiles
+    assert "references auth.users(id) on delete cascade" in profiles.group(1)
+    assert "membership_status" in profiles.group(1)
+    assert "latest_terms_version" in profiles.group(1)
+    assert "latest_terms_accepted_at" in profiles.group(1)
+    assert not re.search(r"\bemail\b", profiles.group(1))
+    for table in (
+        "legal_document_versions",
+        "profiles",
+        "terms_acceptances",
+    ):
+        assert f"create table public.{table}" in migration
+        assert f"alter table public.{table} enable row level security" in migration
+
+
+def test_member_profile_migration_enforces_append_only_history_and_rls_grants() -> None:
+    migration = MEMBER_MIGRATIONS[0].read_text(encoding="utf-8").lower()
+
+    assert "accepted_at timestamptz not null default now()" in migration
+    assert "unique (user_id, document_type, version)" in migration
+    assert "terms_acceptances_select_own" in migration
+    assert "(select auth.uid()) = user_id" in migration
+    assert "(select auth.uid()) = id" in migration
+    assert not re.search(
+        r"create policy .*?on public\.terms_acceptances\s+for "
+        r"(insert|update|delete|all)",
+        migration,
+        re.DOTALL,
+    )
+    assert re.search(
+        r"revoke all privileges on table.*?from public, anon, authenticated",
+        migration,
+        re.DOTALL,
+    )
+    assert re.search(
+        r"grant select on table.*?to authenticated",
+        migration,
+        re.DOTALL,
+    )
+    assert not re.search(
+        r"grant\s+(insert|update|delete|all).*?to authenticated",
+        migration,
+        re.DOTALL,
+    )
+
+
+def test_accept_current_terms_rpc_uses_database_identity_version_and_time() -> None:
+    migration = MEMBER_MIGRATIONS[0].read_text(encoding="utf-8").lower()
+    rpc = re.search(
+        r"create function public\.accept_current_terms\(\)(.*?)\n\$\$;",
+        migration,
+        re.DOTALL,
+    )
+
+    assert rpc
+    body = rpc.group(1)
+    assert "auth.uid()" in body
+    assert "current_user_id uuid" in body
+    assert "public.legal_document_versions" in body
+    assert "document.is_current" in body
+    assert "insert into public.terms_acceptances" in body
+    assert "update public.profiles" in body
+    assert "on conflict (user_id, document_type, version) do nothing" in body
+    assert "accepted_at" not in re.search(
+        r"insert into public\.terms_acceptances\s*\((.*?)\)",
+        body,
+        re.DOTALL,
+    ).group(1)
+    assert re.search(
+        r"revoke all on function public\.accept_current_terms\(\)"
+        r".*?from public, anon, authenticated",
+        migration,
+        re.DOTALL,
+    )
+    assert re.search(
+        r"grant execute on function public\.accept_current_terms\(\)"
+        r"\s*to authenticated",
+        migration,
+    )
+
+
+def accept_current_terms_fix_rpc() -> str:
+    migration = ACCEPT_TERMS_FIX_MIGRATION.read_text(encoding="utf-8").lower()
+    rpc = re.search(
+        r"create or replace function public\.accept_current_terms\(\)"
+        r"(.*?)\n\$\$;",
+        migration,
+        re.DOTALL,
+    )
+    assert rpc
+    return rpc.group(1)
+
+
+def test_accept_current_terms_conflict_fix_migration_exists() -> None:
+    assert ACCEPT_TERMS_FIX_MIGRATION.is_file()
+    assert ACCEPT_TERMS_FIX_MIGRATION.stat().st_size > 0
+
+
+def test_accept_current_terms_fix_names_conflict_constraint() -> None:
+    body = accept_current_terms_fix_rpc()
+
+    assert (
+        "on conflict on constraint "
+        "terms_acceptances_user_document_version_key"
+    ) in body
+    assert re.search(
+        r"on conflict on constraint "
+        r"terms_acceptances_user_document_version_key\s+do nothing",
+        body,
+    )
+
+
+def test_accept_current_terms_fix_avoids_ambiguous_conflict_columns() -> None:
+    body = accept_current_terms_fix_rpc()
+
+    assert "returns table" in body
+    assert re.search(r"\bversion text\b", body)
+    assert not re.search(
+        r"on conflict\s*\(\s*user_id\s*,\s*document_type\s*,\s*version\s*\)",
+        body,
+    )
+
+
+def test_accept_current_terms_fix_preserves_security_and_rpc_contract() -> None:
+    migration = ACCEPT_TERMS_FIX_MIGRATION.read_text(encoding="utf-8").lower()
+    body = accept_current_terms_fix_rpc()
+
+    for expected in (
+        "security definer",
+        "set search_path = ''",
+        "auth.uid()",
+        "public.legal_document_versions",
+        "document.is_current",
+        "insert into public.terms_acceptances",
+        "update public.profiles",
+        "member profile is unavailable",
+        "select current_terms_version, recorded_accepted_at",
+    ):
+        assert expected in body
+    insert_columns = re.search(
+        r"insert into public\.terms_acceptances\s*\((.*?)\)",
+        body,
+        re.DOTALL,
+    )
+    assert insert_columns
+    assert "accepted_at" not in insert_columns.group(1)
+    assert re.search(
+        r"revoke execute on function public\.accept_current_terms\(\)"
+        r"\s*from public, anon, authenticated",
+        migration,
+    )
+    assert re.search(
+        r"grant execute on function public\.accept_current_terms\(\)"
+        r"\s*to authenticated",
+        migration,
+    )
+
+
+def accept_current_terms_profile_update() -> str:
+    migration = ACCEPT_TERMS_FIX_MIGRATION.read_text(encoding="utf-8").lower()
+    update = re.search(
+        r"update public\.profiles as profile\s+set\s+(.*?)"
+        r"\s+where profile\.id = current_user_id;",
+        migration,
+        re.DOTALL,
+    )
+    assert update
+    return " ".join(update.group(1).split())
+
+
+def test_accept_current_terms_activates_pending_terms_profile_only() -> None:
+    update = accept_current_terms_profile_update()
+
+    assert (
+        "membership_status = case "
+        "when profile.membership_status = 'pending_terms' "
+        "then 'active'::public.membership_status "
+        "else profile.membership_status end"
+    ) in update
+    assert not re.search(r"membership_status\s*=\s*'active'\s*,", update)
+
+
+def test_accept_current_terms_does_not_activate_suspended_profile() -> None:
+    update = accept_current_terms_profile_update()
+
+    assert "else profile.membership_status end" in update
+    assert not re.search(
+        r"when profile\.membership_status = 'suspended'\s+"
+        r"then 'active'",
+        update,
+    )
+
+
+def test_accept_current_terms_does_not_activate_withdrawal_pending_profile() -> None:
+    update = accept_current_terms_profile_update()
+
+    assert "else profile.membership_status end" in update
+    assert not re.search(
+        r"when profile\.membership_status = 'withdrawal_pending'\s+"
+        r"then 'active'",
+        update,
+    )
+
+
+def test_accept_current_terms_keeps_active_profile_active() -> None:
+    update = accept_current_terms_profile_update()
+
+    assert "else profile.membership_status end" in update
+    assert not re.search(
+        r"when profile\.membership_status = 'active'\s+then",
+        update,
+    )
+
+
+def test_auth_profile_trigger_and_backfill_do_not_infer_terms_acceptance() -> None:
+    migration = MEMBER_MIGRATIONS[0].read_text(encoding="utf-8").lower()
+    backfill = re.search(
+        r"-- existing auth users.*?"
+        r"(insert into public\.profiles.*?on conflict \(id\) do nothing;)",
+        migration,
+        re.DOTALL,
+    )
+
+    assert "create function public.create_profile_for_new_auth_user()" in migration
+    assert "create trigger create_profile_after_auth_user_insert" in migration
+    assert "after insert on auth.users" in migration
+    assert "values (new.id)" in migration
+    assert backfill
+    assert "terms_acceptances" not in backfill.group(1)
+    assert "'active'" not in backfill.group(1)
 
 
 def test_public_config_sample_has_only_expected_empty_values() -> None:
@@ -529,6 +873,13 @@ def test_magic_link_submission_validates_input_prevents_duplicates_and_is_neutra
     assert "メールを確認してください" in status
     assert "member@example.test" not in status
     assert messages == []
+    stored = page.evaluate(
+        """Object.fromEntries(
+          Object.entries(sessionStorage).filter(([key]) => key.startsWith("tcw."))
+        )"""
+    )
+    assert stored == {"tcw.pendingTermsAcceptance": "1"}
+    assert "member@example.test" not in json.dumps(stored)
 
     arguments = page.evaluate("window.__clientArguments")
     assert arguments["url"] == "https://project.example.supabase.co"
@@ -575,6 +926,52 @@ def test_pkce_callback_failure_scrubs_url_and_shows_login_route(
     assert messages == []
 
 
+def test_pkce_callback_accepts_terms_only_when_same_browser_marker_exists(
+    auth_page_loader,
+) -> None:
+    page, messages = auth_page_loader(
+        "auth/callback.html?code=one-time-code",
+        {
+            "sessionEmail": "member@example.test",
+            "pendingTerms": True,
+        },
+    )
+
+    page.wait_for_url("http://pages.test/project/account/index.html")
+    page.locator("[data-account-content]:not([hidden])").wait_for()
+    assert page.evaluate(
+        'window.sessionStorage.getItem("mock-rpc-called")'
+    ) == "accept_current_terms"
+    assert page.evaluate(
+        'window.sessionStorage.getItem("tcw.pendingTermsAcceptance")'
+    ) is None
+    assert messages == []
+
+
+def test_pkce_callback_keeps_session_when_terms_rpc_fails(
+    auth_page_loader,
+) -> None:
+    page, messages = auth_page_loader(
+        "auth/callback.html?code=one-time-code",
+        {
+            "sessionEmail": "member@example.test",
+            "pendingTerms": True,
+            "rpcError": True,
+            "profileStatus": "pending_terms",
+            "latestTermsVersion": None,
+            "acceptances": [],
+        },
+    )
+
+    page.wait_for_url("http://pages.test/project/account/index.html")
+    page.locator("[data-terms-consent-panel]:not([hidden])").wait_for()
+    assert page.locator("[data-account-email]").inner_text() == "member@example.test"
+    assert page.evaluate(
+        'window.sessionStorage.getItem("tcw.pendingTermsAcceptance")'
+    ) == "1"
+    assert messages == []
+
+
 def test_account_checks_session_displays_email_and_signs_out(
     auth_page_loader,
 ) -> None:
@@ -593,6 +990,88 @@ def test_account_checks_session_displays_email_and_signs_out(
     assert page.evaluate(
         'window.sessionStorage.getItem("mock-signed-out")'
     ) == "true"
+    assert messages == []
+
+
+def test_pending_terms_account_requires_explicit_consent_and_refreshes(
+    auth_page_loader,
+) -> None:
+    page, messages = auth_page_loader(
+        "account/index.html",
+        {
+            "sessionEmail": "member@example.test",
+            "profileStatus": "pending_terms",
+            "latestTermsVersion": None,
+            "acceptances": [],
+        },
+    )
+    panel = page.locator("[data-terms-consent-panel]")
+    panel.wait_for(state="visible")
+    button = page.locator("[data-accept-current-terms]")
+
+    assert page.locator("[data-membership-status]").inner_text() == "pending_terms"
+    assert button.is_disabled()
+    page.locator("[data-account-terms-consent]").check()
+    assert button.is_enabled()
+    button.click()
+    page.locator('[data-action-status][data-state="success"]').wait_for()
+
+    assert page.locator("[data-membership-status]").inner_text() == "active"
+    assert panel.is_hidden()
+    assert page.locator("[data-latest-terms-version]").inner_text() == (
+        "2026-08-04-draft"
+    )
+    assert messages == []
+
+
+def test_active_account_uses_rls_queries_without_another_user_id(
+    auth_page_loader,
+) -> None:
+    page, messages = auth_page_loader(
+        "account/index.html",
+        {"sessionEmail": "member@example.test"},
+    )
+    page.locator("[data-account-loading]").wait_for(state="hidden")
+
+    assert page.locator("[data-account-email-verified]").inner_text() == "認証済み"
+    assert page.locator("[data-membership-status]").inner_text() == "active"
+    assert page.locator("[data-latest-terms-version]").inner_text() == (
+        "2026-08-04-draft"
+    )
+    assert page.locator("[data-terms-consent-panel]").is_hidden()
+    data_calls = page.evaluate("window.__dataCalls")
+    member_calls = [
+        call for call in data_calls
+        if call["table"] in {"profiles", "terms_acceptances"}
+    ]
+    assert member_calls
+    assert all(
+        filter_item["column"] not in {"id", "user_id"}
+        for call in member_calls
+        for filter_item in call["filters"]
+    )
+    assert messages == []
+
+
+def test_account_profile_failure_is_generalized_and_keeps_logout_available(
+    auth_page_loader,
+) -> None:
+    page, messages = auth_page_loader(
+        "account/index.html",
+        {
+            "sessionEmail": "member@example.test",
+            "profileError": True,
+        },
+    )
+    page.locator('[data-account-loading][data-state="error"]').wait_for()
+
+    assert "会員情報を取得できませんでした" in page.locator(
+        "[data-account-loading]"
+    ).inner_text()
+    assert page.locator("[data-sign-out]").is_enabled()
+    assert "member@example.test" not in page.locator(
+        "[data-account-loading]"
+    ).inner_text()
     assert messages == []
 
 
