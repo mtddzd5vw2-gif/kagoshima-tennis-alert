@@ -5,12 +5,12 @@
 | 項目 | 内容 |
 | --- | --- |
 | 対象 | Tennis Court Watcher Phase 1 会員基盤 |
-| 状態 | Supabase Authマジックリンク・PKCE、会員profile、規約版・同意履歴、RLS、同意RPC、最小限のマイページを実装済み。外部環境へのmigration適用と退会は未実施 |
+| 状態 | Phase 1完成済み。Supabase Authマジックリンク・PKCE、会員profile、規約版・同意履歴、RLS、同意RPC、最小限のマイページ、Resend Custom SMTPによる日本語認証メールを本番確認済み |
 | 作成日 | 2026-08-04 |
 | 方針決定日 | 2026-08-04 |
-| 前提文書 | [Project Vision](./PROJECT_VISION.md)、[Development Roadmap](./DEVELOPMENT_ROADMAP.md)、[Service Specification](./SERVICE_SPECIFICATION.md) |
+| 前提文書 | [Project Vision](./PROJECT_VISION.md)、[Development Roadmap](./DEVELOPMENT_ROADMAP.md)、[Service Specification](./SERVICE_SPECIFICATION.md)、[Auth Email Operations](./AUTH_EMAIL_OPERATIONS.md) |
 
-本書はPhase 1の実装境界、認証・認可、データ、画面、テスト、段階導入を定義する。Supabase Auth/PostgreSQLを正式採用し、GitHub Pages上の静的フロントエンドからブラウザ公開用キーで接続する。リージョン、料金枠など明記した項目は引き続き**要決定**である。
+本書はPhase 1の実装境界、認証・認可、データ、画面、テスト、段階導入を定義する。Supabase Auth/PostgreSQLを正式採用し、GitHub Pages上の静的フロントエンドからブラウザ公開用キーで接続する。認証メールはCloudflare Registrarで管理する送信用サブドメインと、TokyoリージョンのResend Custom SMTPを採用済みである。Supabaseの料金枠など、明記した未決項目は引き続き**要決定**である。
 
 ### 0.1 決定済み事項
 
@@ -25,6 +25,11 @@
 | 法務ページ | 会員登録の一般公開前に利用規約とプライバシーポリシーの暫定初版を作成し、内容確認を完了する | 2026-08-04 |
 | Phase 1範囲 | 利用規約同意、会員登録、メール認証、ログイン、ログアウト、最小限のマイページ、退会に限定する | 2026-08-04 |
 | Phase 1対象外 | 通知条件、利用者別通知、LINE連携、課金は実装しない | 2026-08-04 |
+| ドメイン管理 | 独自ドメイン `tenniscourtwatcher.com` をCloudflare Registrarで管理する | 2026-08-06 |
+| 認証メール配信 | TokyoリージョンのResendをSupabase Custom SMTPとして採用する | 2026-08-06 |
+| 送信ドメイン | `email.tenniscourtwatcher.com` を使用し、SPF・DKIM・DMARCを認証する | 2026-08-06 |
+| 送信元 | 表示名 `Tennis Court Watcher`、アドレス `no-reply@email.tenniscourtwatcher.com` とする | 2026-08-06 |
+| メールテンプレート | 初回登録はConfirm sign up、登録済みユーザーの通常ログインはMagic link or OTPの日本語テンプレートを使用する | 2026-08-06 |
 
 ## 1. 現在の構成と制約
 
@@ -115,7 +120,8 @@ flowchart LR
     A["Supabase Auth"]
     D["Supabase PostgreSQL<br>RLS有効"]
     F["Supabase Edge Function<br>退会などの特権処理"]
-    M["認証メール配信"]
+    M["Resend Custom SMTP<br>Tokyoリージョン"]
+    C["Cloudflare Registrar / DNS<br>email.tenniscourtwatcher.com"]
     G["既存GitHub Actions<br>スクレイパー＋LINE通知"]
 
     U -->|"静的HTML/CSS/JS"| P
@@ -125,7 +131,8 @@ flowchart LR
     U -->|"利用者JWT"| F
     F -->|"サーバー専用secret/service role"| A
     F -->|"必要最小限の特権処理"| D
-    A --> M
+    A -->|"Custom SMTP"| M
+    C -->|"SPF・DKIM・DMARC"| M
     M -->|"許可済みcallback URL"| P
     G --> J
 ```
@@ -136,6 +143,8 @@ flowchart LR
 | --- | --- | --- |
 | GitHub Pages | 登録・認証・ログイン・マイページのUI、公開用キーを使ったAuth/Data API呼び出し | 認可の最終判断、service role/secret keyの保持 |
 | Supabase Auth | マジックリンク発行、メール確認、ログイン、セッション、Authユーザー削除 | 利用規約本文の公開元、Phase 0の空き取得 |
+| Resend | Supabase Custom SMTPの受け付け、認証メール配信、配信イベントの提供 | 会員認証、受信メール運用 |
+| Cloudflare Registrar / DNS | ドメイン登録の自動更新、送信用サブドメインのSPF・DKIM・DMARC公開 | 認証テンプレート、Authユーザー管理 |
 | PostgreSQL | プロフィール、規約版、同意履歴、RLS、会員状態 | メールアドレスや認証情報の重複保存 |
 | DB Trigger / RPC | Authユーザー作成時のpending profile作成、現行規約の取得、同意履歴とprofileの同一トランザクション更新 | `raw_user_meta_data` やクライアント送信の利用者ID・同意日時を信用すること |
 | Edge Function | 退会など、Auth Admin権限が必要な処理 | 未認証呼び出し、リクエストの `user_id` を信用すること |
@@ -149,7 +158,7 @@ flowchart LR
 - 本番のSite URLとRedirect URLは正確なHTTPS URLを明示登録し、本番では広すぎるワイルドカードを使用しない。
 - 開発・ステージング・本番は別プロジェクトに分離する案を推奨する。最低限、本番データをローカルやテストへ複製しない。
 - Auth APIのレート制限とCAPTCHAの採否をリリース前に確認する。
-- Supabase標準の試用メール送信は本番用途に依存せず、独自SMTPを設定する。配信事業者・ドメインは**要決定**。
+- Supabase標準の試用メール送信には依存せず、TokyoリージョンのResend Custom SMTPを使用する。送信用サブドメインは `email.tenniscourtwatcher.com`、送信元は `Tennis Court Watcher <no-reply@email.tenniscourtwatcher.com>` とする。SMTP passwordにはドメイン限定Sending accessのResend APIキーを使用し、値はGitHub、Pages、Artifact、ログへ出さない。運用詳細は [Auth Email Operations](./AUTH_EMAIL_OPERATIONS.md) を参照する。
 - Supabaseのリージョン、料金枠、バックアップ要件は**要決定**である。
 
 ## 5. GitHub Pagesとの接続方法
@@ -300,7 +309,15 @@ sequenceDiagram
 
 - 「登録済み」「メールが存在しない」「未認証」を第三者が判別しやすい文言にしない。
 - メール認証待ち画面へメールアドレスを渡す場合はメモリ内またはマスク済み表示に限定し、URL、ログ、HTMLへ埋め込まない。
-- 再送はSupabase側のレート制限に加え、ボタンの待機時間を設ける。具体値は**要決定**。
+- 同一利用者への再送はSupabase Custom SMTPの最小送信間隔に合わせ、前回の要求から60秒以上空ける。
+
+### 8.3 認証メールテンプレート
+
+- 初回登録にはConfirm sign upテンプレートを使用し、メールアドレスの確認とログインが完了することを案内する。
+- 登録済みユーザーの通常ログインにはMagic link or OTPテンプレートを使用し、短時間・一度のみ有効なログインリンクであることを案内する。
+- どちらも日本語テンプレートとし、送信専用であること、心当たりがなければ削除することを明記する。
+- Magic link or OTPでは、同じブラウザではログアウトしない限り通常セッションが保持されるUXを案内する。
+- Supabaseテンプレート変数 `{{ .ConfirmationURL }}` は変更しない。現在の件名と再現可能なHTMLは [Auth Email Operations](./AUTH_EMAIL_OPERATIONS.md#14-認証メールテンプレート) を正とする。
 
 ## 9. データモデル
 
@@ -478,6 +495,7 @@ using (
 | --- | --- | --- |
 | ブラウザ公開設定 | Supabase URL、publishable key、callback URL | GitHub Actions Repository Variablesまたは公開設定ファイル |
 | Edge Function Secret | Supabase secret/service role key、将来の外部API秘密鍵 | Supabase Edge Function Secrets |
+| Custom SMTP Secret | ドメイン限定Sending accessのResend APIキー | Supabase Custom SMTP password |
 | GitHub Actions Secret | 既存LINE token/user ID、将来Actionsだけが使う秘密値 | GitHub Actions Secrets |
 | ローカルSecret | ローカルDB接続、CLI token、テスト用秘密値 | `.env.local` 等のGit管理外ファイル |
 | 公開・固定設定 | 規約版、公開法務ページ、スキーマ、RLS migration | Git |
@@ -534,6 +552,8 @@ Pagesジョブは出力先だけを `--output _site/assets/config/auth-config.js
 - 本番DB dump、Authユーザーexport、個人情報を含むログ・スクリーンショット・Artifact
 - 既存の `LINE_CHANNEL_ACCESS_TOKEN` と `LINE_USER_ID`
 
+Resend APIキーはSMTP passwordとして使用するが、その値を文書やスクリーンショットへ記載しない。APIキーの作成・ローテーション・漏えい時対応は [Auth Email Operations](./AUTH_EMAIL_OPERATIONS.md) に従う。
+
 ## 17. service role keyの禁止事項
 
 - service role keyまたはsecret keyを、`auth/`、`account/`、`legal/`、`assets/`、`index.html`、ブラウザJavaScript、runtime config、source map、Pages Artifactへ含めない。
@@ -567,7 +587,7 @@ Pagesジョブは出力先だけを `--output _site/assets/config/auth-config.js
 - 認証情報をURLとログから除去する処理
 - マイページで本人情報だけを表示する処理
 
-公開設定、入力・同意、二重送信、一般化メッセージ、ログインフォーム表示前のセッション確認、既存セッションからのマイページ遷移、PKCE callback、URL消去、callback同意RPC、pending/activeマイページ、本人IDを指定しないRLS依存query、ローカル範囲ログアウト、console非露出はPlaywrightとpytestで実装済みである。migrationのDDL・RLS・Grant・RPC・trigger・backfillは静的検査済みである。実メール、期限切れ・二回使用、実PostgreSQL上のRLS分離はSupabase環境での手動検証が残る。
+公開設定、入力・同意、二重送信、一般化メッセージ、ログインフォーム表示前のセッション確認、既存セッションからのマイページ遷移、PKCE callback、URL消去、callback同意RPC、pending/activeマイページ、本人IDを指定しないRLS依存query、ローカル範囲ログアウト、console非露出はPlaywrightとpytestで実装済みである。migrationのDDL・RLS・Grant・RPC・trigger・backfillは静的検査済みであり、本番でprofiles、RLS、規約同意履歴を確認済みである。一般メールアドレスでConfirm sign up、Magic link or OTP、同一ブラウザのセッション保持を確認し、Resend EmailsでDeliveredを確認済みである。
 
 ### 19.2 DB・RLSテスト
 
@@ -647,7 +667,7 @@ Supabase採用、メールのマジックリンク認証、GitHub Pages継続、
 
 ### Step 2: Supabaseローカル環境とDB migration
 
-**migration実装済み、外部環境への適用は未実施。** `legal_document_versions`、`profiles`、`terms_acceptances`、制約、Grant、RLS、trigger、backfill、同意RPCを1本のmigrationへまとめた。架空ユーザーを使う実DB RLSテストは適用先の開発環境で行う。
+**実装・本番確認済み。** `legal_document_versions`、`profiles`、`terms_acceptances`、制約、Grant、RLS、trigger、backfill、同意RPCをmigrationへまとめた。一般利用者の初回登録を通じてprofile、RLS、規約同意履歴を確認済みである。既存のmigration SQLとRLS設計は変更しない。
 
 ### Step 3: 規約・プライバシー公開画面
 
@@ -655,11 +675,11 @@ Supabase採用、メールのマジックリンク認証、GitHub Pages継続、
 
 ### Step 4: 会員登録と同意記録
 
-**実装済み。** 登録・ログイン共通画面、入力検証、明示同意、Auth `signInWithOtp`、一般化した表示、同一ブラウザ内の同意保留marker、profile trigger、同意RPCを実装した。レート制限の運用設定は未実施である。
+**実装・本番確認済み。** 登録・ログイン共通画面、入力検証、明示同意、Auth `signInWithOtp`、一般化した表示、同一ブラウザ内の同意保留marker、profile trigger、同意RPCを実装した。同一利用者への最小送信間隔は60秒に設定済みである。
 
 ### Step 5: メール認証
 
-**ブラウザ部分を実装済み。** 固定callback、PKCE code交換、失敗時の再ログイン導線、URL消去を実装した。独自SMTP、専用の再送UI、期限とレート制限の運用設定は未実装である。
+**実装・本番確認済み。** 固定callback、PKCE code交換、失敗時の再ログイン導線、URL消去を実装した。Cloudflare Registrarで管理する `email.tenniscourtwatcher.com` とTokyoリージョンのResend Custom SMTPを採用し、SPF・DKIM・DMARC、送信、日本語テンプレート、一般メールアドレスへのDeliveredを確認済みである。配信障害時は [Auth Email Operations](./AUTH_EMAIL_OPERATIONS.md#10-配信障害時の切り分け) に従う。
 
 ### Step 6: ログイン・ログアウト・マイページ
 
@@ -712,10 +732,10 @@ E2E、RLS、漏えい検査、アクセシビリティ、Phase 0回帰、バッ�
 
 ### メール
 
-- 本番SMTP/配信事業者、送信元ドメイン、表示名
-- SPF、DKIM、DMARC、配信監視、バウンス対応
-- 認証リンク有効期限、再送待機、未認証アカウント保持期間
+- 認証リンク有効期限、未認証アカウント保持期間
 - 同一メールアドレスの再登録と、登録済み推測を防ぐ画面文言
+
+本番SMTP、配信事業者、送信元、Tokyoリージョン、SPF・DKIM・DMARC、配信確認、60秒の再送待機は決定済みであり、未決事項ではない。運用値は [Auth Email Operations](./AUTH_EMAIL_OPERATIONS.md) を参照する。
 
 ### 規約・個人情報
 
