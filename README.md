@@ -11,6 +11,7 @@
 - [Development Roadmap](docs/DEVELOPMENT_ROADMAP.md)
 - [Service Specification](docs/SERVICE_SPECIFICATION.md)
 - [Phase 1 Auth Design](docs/PHASE1_AUTH_DESIGN.md)
+- [Auth Email Operations](docs/AUTH_EMAIL_OPERATIONS.md)
 
 ## 現在の機能
 
@@ -37,6 +38,8 @@
 ## Phase 1 認証プロジェクト基盤
 
 2026-08-04時点で、Supabase Auth、メールのマジックリンク認証、GitHub Pages、PKCEを正式方針としました。ブラウザは固定版 `@supabase/supabase-js@2.106.2` を使用し、公開Project URLとpublishable keyだけで接続します。`flowType: "pkce"`、`persistSession: true`、`autoRefreshToken: true` を明示しています。
+
+本番の認証メールはResend Custom SMTPを使用し、送信用サブドメインは `email.tenniscourtwatcher.com` です。初回登録用と通常ログイン用の日本語テンプレートを分け、Supabase Organization Teamに所属していない一般メールアドレスで初回登録・通常ログイン・配信を確認済みです。Resend APIキーやSMTP passwordなどの秘密値はリポジトリへ保存しません。設定、テンプレート、確認手順、障害対応は [Auth Email Operations](docs/AUTH_EMAIL_OPERATIONS.md) を参照してください。
 
 実装済みの範囲は、メール形式・利用規約同意の確認、`signInWithOtp` によるマジックリンク送信、codeの `exchangeCodeForSession`、認証URLの消去、`getSession` によるログイン画面とマイページのセッション確認、会員profileと規約同意履歴の本人表示、現行規約への同意、現在のブラウザを対象にした `signOut({ scope: "local" })` です。成功・失敗文言からアカウントの存在有無を推測しにくくし、メールアドレス・code・token・認証URLをconsoleへ出しません。
 
