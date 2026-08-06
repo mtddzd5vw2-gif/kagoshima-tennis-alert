@@ -32,6 +32,8 @@
 - pytest、GitHub Actions、Pages自動配信
 - Supabase Authのメールマジックリンク送信、PKCE callback、セッション確認、ログアウト
 - 認証用画面（ログイン・会員登録、認証callback、マイページ、利用規約、プライバシーポリシー）
+- active会員向け通知条件の一覧・新規作成・編集・一時停止・有効化・削除UI
+- 通知条件本体・施設・曜日を原子的に保存する `save_notification_rule` RPC
 - 固定版 `supabase-js` v2と、Repository Variablesから生成するブラウザ公開設定
 
 空き状況は候補です。予約前に必ず公式サイトで最新情報を確認してください。
@@ -48,7 +50,7 @@
 
 PKCEのcode verifierはリンクを要求したブラウザ側に保存されるため、マジックリンクは原則としてログイン操作を開始した同じブラウザで開く必要があります。別端末・別ブラウザで開いて認証に失敗した場合は、利用するブラウザでログイン画面から再送してください。
 
-`supabase/migrations/20260804000000_create_member_profiles.sql` に `legal_document_versions`、`profiles`、`terms_acceptances`、新規Authユーザー用trigger、既存ユーザーbackfill、RLS、最小権限Grant、引数なしの `accept_current_terms()` RPCを実装しています。`20260806000000_fix_accept_current_terms_conflict.sql` は、適用済みの関数を制約名指定の `ON CONFLICT` へ置き換えます。ブラウザから会員データを直接変更する権限はなく、同意登録だけをRPCへ集約します。退会Edge Function、通知条件UI、空きとの照合、利用者別通知、LINE連携、課金は未実装で、退会ボタンは準備中のままです。
+`supabase/migrations/20260804000000_create_member_profiles.sql` に `legal_document_versions`、`profiles`、`terms_acceptances`、新規Authユーザー用trigger、既存ユーザーbackfill、RLS、最小権限Grant、引数なしの `accept_current_terms()` RPCを実装しています。`20260806000000_fix_accept_current_terms_conflict.sql` は、適用済みの関数を制約名指定の `ON CONFLICT` へ置き換えます。ブラウザから会員データを直接変更する権限はなく、同意登録だけをRPCへ集約します。退会Edge Function、空き候補との照合、利用者別通知、LINE連携、課金は未実装で、退会ボタンは準備中のままです。
 
 開発用の現行規約版は `2026-08-04-draft` です。一般公開前に正式な規約本文・版番号・発効日へ更新し、開発用版への同意済み利用者にも正式版への再同意を求めてください。
 
@@ -57,12 +59,13 @@ PKCEのcode verifierはリンクを要求したブラウザ側に保存される
 - `auth/login.html`: マジックリンクによるログイン・会員登録画面
 - `auth/callback.html`: メール認証callback画面
 - `account/index.html`: 最小限のマイページ
+- `account/notifications.html`: 通知条件の一覧・作成・編集・停止・有効化・削除画面
 - `legal/terms.html`: 利用規約の暫定案
 - `legal/privacy.html`: プライバシーポリシーの暫定案
 
 法務ページは暫定案であり、会員登録の一般公開前に運営者表示、問い合わせ窓口、版番号、発効日、保持・削除方針などの内容確認が必要です。詳細と未決事項は[Phase 1 Auth Design](docs/PHASE1_AUTH_DESIGN.md)を参照してください。
 
-Phase 2のデータ層は `supabase/migrations/20260807000000_create_notification_rules.sql` に追加しています。鹿児島市3施設のマスター、通知条件・施設・曜日の関連、本人かつactive会員に限定したRLSを定義しています。設計と未実装範囲は[Phase 2 Notification Rules Design](docs/PHASE2_NOTIFICATION_RULES_DESIGN.md)を参照してください。このmigrationはSupabase環境へまだ適用していません。
+Phase 2は進行中です。`supabase/migrations/20260807000000_create_notification_rules.sql` に鹿児島市3施設のマスター、通知条件・施設・曜日の関連、本人かつactive会員に限定したRLSを定義し、`20260807100000_add_notification_rule_save_rpc.sql` に原子的保存用 `save_notification_rule` RPCを追加しています。通知条件UIは実装済みですが、空き候補との照合ロジックは未実装で、条件数上限は未決定です。Phase 3の実メール送信も未実装です。リポジトリへのmigration追加だけではSupabase環境へ自動適用されないため、適用状況は環境ごとに確認してください。詳細は[Phase 2 Notification Rules Design](docs/PHASE2_NOTIFICATION_RULES_DESIGN.md)を参照してください。
 
 ## ファイル構成
 
@@ -70,11 +73,14 @@ Phase 2のデータ層は `supabase/migrations/20260807000000_create_notificatio
 .
 ├── .github/workflows/update-availability.yml
 ├── account/
-│   └── index.html
+│   ├── index.html
+│   └── notifications.html
 ├── assets/
 │   ├── config/auth-config.example.js
 │   ├── css/auth.css
-│   └── js/auth-foundation.js
+│   └── js/
+│       ├── auth-foundation.js
+│       └── notification-rules.js
 ├── auth/
 │   ├── callback.html
 │   └── login.html
@@ -83,6 +89,7 @@ Phase 2のデータ層は `supabase/migrations/20260807000000_create_notificatio
 ├── docs/
 │   ├── DEVELOPMENT_ROADMAP.md
 │   ├── PHASE1_AUTH_DESIGN.md
+│   ├── PHASE2_NOTIFICATION_RULES_DESIGN.md
 │   ├── PROJECT_VISION.md
 │   └── SERVICE_SPECIFICATION.md
 ├── legal/
@@ -92,12 +99,17 @@ Phase 2のデータ層は `supabase/migrations/20260807000000_create_notificatio
 │   ├── __init__.py
 │   ├── generate_auth_config.py
 │   └── scrape.py
+├── supabase/migrations/
+│   ├── 20260807000000_create_notification_rules.sql
+│   └── 20260807100000_add_notification_rule_save_rpc.sql
 ├── tests/
 │   ├── fixtures/kamoike_schedule.html
 │   ├── fixtures/sumizei_schedule.html
 │   ├── fixtures/toukai_schedule.html
 │   ├── test_auth_foundation.py
 │   ├── test_notifications.py
+│   ├── test_notification_rules_schema.py
+│   ├── test_notification_rules_ui.py
 │   ├── test_page.py
 │   └── test_scrape.py
 ├── index.html
@@ -258,8 +270,9 @@ $env:AUTH_CALLBACK_URL = "http://localhost:8765/auth/callback.html"
 1. `supabase/migrations/20260804000000_create_member_profiles.sql`
 2. `supabase/migrations/20260806000000_fix_accept_current_terms_conflict.sql`
 3. `supabase/migrations/20260807000000_create_notification_rules.sql`
+4. `supabase/migrations/20260807100000_add_notification_rule_save_rpc.sql`
 
-現在の開発Supabaseには第1migrationが適用済みです。適用済みmigrationを再実行・編集しないでください。第3migrationは未適用であり、本番適用前にSQL、RLS、Grant、初期データをレビューし、検証環境で実DBテストを行う必要があります。新規環境では第1、第2、第3の順でそれぞれ1回実行します。
+適用済みmigrationを再実行・編集しないでください。対象環境のmigration履歴を確認し、未適用分だけを上記の順でそれぞれ1回適用します。適用前にSQL、RLS、Grant、初期データをレビューし、検証環境で実DBテストを行ってください。
 
 第2migrationの実行後はTable Editorで変更せず、SQL Editorで次を確認してください。
 
@@ -362,7 +375,7 @@ Pages画面の「最終更新」は、`availability.json` 全体が生成され�
 1. Supabaseプロジェクト、リージョン、料金枠、環境分離を決定・作成する
 2. GitHub Pagesの本番callback URLをSupabaseのRedirect URLsへ登録し、Repository Variablesを設定する
 3. メールマジックリンク、SMTP、リンク有効期限、レート制限を設定して実環境smoke testを行う
-4. migrationを開発用Supabaseへ手動適用し、複数の架空ユーザーでRLSと同意RPCを実DB検証する
+4. 対象Supabaseのmigration履歴を確認して未適用分を手動適用し、複数の架空ユーザーでRLSとRPCを実DB検証する
 5. 退会Edge Functionと保持・削除方針を別実装する
 6. 利用規約とプライバシーポリシーの暫定初版を確認し、版番号・発効日・問い合わせ先を確定する
 7. GitHub Actionsの外部ActionをコミットSHAで固定する
@@ -371,7 +384,7 @@ Pages画面の「最終更新」は、`availability.json` 全体が生成され�
 ## 注意事項
 
 - 自動予約は実装していません。
-- 会員DB、規約同意履歴、RLS、規約同意RPC、会員情報表示はmigrationと静的フロントエンドへ実装済みです。Phase 2の通知条件データ層もmigrationへ追加済みですが、Supabase環境への適用と実DB RLS検証は行っていません。通知条件UI、照合ロジック、退会処理は未実装です。
+- 会員DB、規約同意履歴、RLS、規約同意RPC、会員情報表示はmigrationと静的フロントエンドへ実装済みです。Phase 2の通知条件データ層、原子的保存RPC、通知条件UIもリポジトリへ実装済みです。空き候補との照合ロジック、条件数上限、Phase 3の実メール送信、退会処理は未実装です。migrationの適用状況と実DB RLS検証状況は対象環境ごとに確認してください。
 - 短い間隔でのアクセスや過剰な並列実行は避けてください。
 - 予約サイトの仕様変更により取得できなくなる可能性があります。
 - `availability.json` とGitHub Pagesは公開情報として扱ってください。

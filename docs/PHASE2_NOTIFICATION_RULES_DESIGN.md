@@ -2,11 +2,11 @@
 
 ## 1. 目的と責務境界
 
-本書は、Phase 2で使用する地域・施設マスターと、利用者ごとの通知条件を保存するデータモデルを定義する。実装は `supabase/migrations/20260807000000_create_notification_rules.sql` に含める。
+本書は、Phase 2で使用する地域・施設マスター、利用者ごとの通知条件を保存するデータモデル、通知条件UI、原子的保存RPCを定義する。テーブル・RLS・初期マスターは `supabase/migrations/20260807000000_create_notification_rules.sql`、原子的保存RPCは `supabase/migrations/20260807100000_add_notification_rule_save_rpc.sql` に含める。
 
-Phase 2の責務は、通知条件の保存、一覧、編集、削除、一時停止と、将来の空き候補に対する照合である。今回実装するのはデータモデル、初期マスター、RLS、DB制約までであり、画面と照合処理は未実装である。
+Phase 2は進行中である。通知条件の一覧・新規作成・編集・削除・一時停止・有効化UIと、条件本体・施設・曜日を1トランザクションで保存する `save_notification_rule` RPCを実装済みである。空き候補と有効な条件の照合ロジックは未実装である。
 
-Phase 3の責務は、利用者別メール送信、配信キュー、再試行、バウンス・配信停止処理、通知履歴である。実際のメール・LINE送信をPhase 2のテーブルやmigrationへ含めない。
+Phase 3の責務は、利用者別メール送信、配信キュー、再試行、バウンス・配信停止処理、通知履歴である。実際の利用者別メール送信は未実装であり、Phase 2のテーブルやmigrationへ含めない。
 
 ## 2. テーブル一覧
 
@@ -201,9 +201,9 @@ DBのcheck制約で1〜7だけを許可する。
 
 DBは文字列、時間順序、日付範囲、最低連続時間、曜日、外部キー、所有者の整合性を保証する。一方、通知条件本体を作ってから子テーブルを登録できるよう、施設または曜日が0件の不完全な条件もDB上は保存可能とする。
 
-Phase 2のUI実装時には、保存完了・有効化の前に施設1件以上、曜日1件以上を必須検証する。照合処理では、施設または曜日が0件の条件を `is_enabled` の値にかかわらず無効として扱う。
+Phase 2のUIと `save_notification_rule` RPCは、保存完了前に施設1件以上、曜日1件以上を必須検証する。UIは停止中の条件を有効化する前にも、現在読み込んでいる施設・曜日がそれぞれ1件以上あることを確認する。将来の照合処理でも、施設または曜日が0件の条件を `is_enabled` の値にかかわらず無効として扱う。
 
-利用者ごとの条件数上限と無料プランの上限は未決定であり、今回のmigrationには実装しない。
+利用者ごとの条件数上限と無料プランの上限は未決定であり、現行UIとmigrationには実装しない。
 
 ## 7. RLSと権限
 
@@ -220,12 +220,14 @@ INSERTは `WITH CHECK`、UPDATEは `USING` と `WITH CHECK`、DELETEは `USING` 
 
 active確認は既存 `profiles` の本人SELECT RLSを利用した単純な `exists` で行う。既存RLSの無効化・緩和や、新しい `security definer` 関数は行わない。
 
+`save_notification_rule` は `security invoker`、`set search_path = ''` のまま実行し、利用者ID引数を受け取らない。新規作成では `auth.uid()` を `user_id` に使用し、編集では条件IDと `auth.uid()` の両方に一致する本人所有行だけを更新する。本体・施設・曜日の全保存が成功した場合だけ条件IDを返し、途中の例外ではRPC呼び出し全体をロールバックする。実行権限は `PUBLIC` と `anon` から剥奪し、`authenticated` だけへ付与する。
+
 ## 8. migrationの適用とロールバック
 
-このmigrationは既存2件の後に1回だけ適用する。適用済みmigrationを編集・再実行せず、修正が必要な場合は新しいタイムスタンプのmigrationを追加する。
+通知条件テーブルmigrationの後に、原子的保存RPC migrationを1回だけ適用する。適用済みmigrationを編集・再実行せず、修正が必要な場合は新しいタイムスタンプのmigrationを追加する。
 
-本番適用前に、対象Supabaseプロジェクトと環境、SQL全文、RLS、Grant、初期データをレビューする。空の検証環境では3件のmigrationを時系列順に適用し、複数の架空ユーザーで本人・他人・inactive会員・anonの操作を実DB検証する。
+適用前に、対象Supabaseプロジェクトと環境、SQL全文、RLS、Grant、初期データをレビューする。空の検証環境では全migrationを時系列順に適用し、複数の架空ユーザーで本人・他人・inactive会員・anonの操作を実DB検証する。
 
 このmigrationには自動down migrationを用意しない。適用直後かつ利用者データがない検証環境で戻す必要がある場合だけ、子テーブル、`notification_rules`、施設、施設種別、地域の順で依存関係を確認して削除し、triggerと専用functionも削除する。本番データが存在する環境では安易にテーブルをdropせず、バックアップと復元手順を確認したうえで前方修正migrationを優先する。
 
-本リポジトリへの追加だけではSupabase環境へ自動適用されない。今回の実装時点では本番Supabaseへ未適用である。
+本リポジトリへのmigration追加だけではSupabase環境へ自動適用されない。適用状況は対象環境ごとにmigration履歴を確認し、未適用分だけを時系列順に適用する。

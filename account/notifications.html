@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="referrer" content="no-referrer">
+    <meta name="robots" content="noindex">
+    <meta
+      name="description"
+      content="Tennis Court Watcherの通知条件を作成・編集する会員向け画面です。"
+    >
+    <title>通知条件 | Tennis Court Watcher</title>
+    <link rel="stylesheet" href="../assets/css/auth.css">
+    <script src="../assets/config/auth-config.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.106.2/dist/umd/supabase.js"></script>
+    <script src="../assets/js/notification-rules.js" defer></script>
+  </head>
+  <body data-page="notification-rules">
+    <header class="site-header">
+      <div class="site-header__inner">
+        <a class="brand" href="../index.html">Tennis Court Watcher</a>
+        <nav class="top-nav" aria-label="主要ナビゲーション">
+          <a href="index.html">マイページ</a>
+          <a href="../index.html">空き状況</a>
+        </nav>
+      </div>
+    </header>
+
+    <main class="page-shell">
+      <div class="notification-page-heading">
+        <div>
+          <p class="eyebrow">Notification rules</p>
+          <h1>通知条件</h1>
+          <p class="lead">
+            空き状況を探す施設・曜日・期間・時間帯を登録できます。
+            登録直後は停止中にして、内容を確認してから有効化できます。
+          </p>
+        </div>
+        <div class="page-links" aria-label="ページ移動">
+          <a class="button button--secondary" href="index.html">マイページへ戻る</a>
+          <a class="button button--secondary" href="../index.html">空き状況を見る</a>
+        </div>
+      </div>
+
+      <p class="notice" data-notification-loading aria-live="polite">
+        ログイン状態を確認しています…
+      </p>
+
+      <section
+        class="status-card membership-guidance"
+        data-membership-required
+        aria-labelledby="membership-required-title"
+        hidden
+      >
+        <h2 id="membership-required-title">通知条件を利用するには規約同意が必要です</h2>
+        <p>
+          現在の会員状態では通知条件を操作できません。
+          マイページで現行の利用規約を確認し、同意手続きを完了してください。
+        </p>
+        <a class="button" href="index.html">マイページで規約に同意する</a>
+      </section>
+
+      <div data-notification-content hidden>
+        <div class="notification-toolbar">
+          <div>
+            <h2 id="notification-rule-list-title">登録済みの通知条件</h2>
+            <p class="muted">
+              有効化した条件が将来の空き状況照合の対象になります。
+            </p>
+          </div>
+          <button class="button" type="button" data-new-rule>
+            新しい条件を作成
+          </button>
+        </div>
+
+        <p
+          class="status-text notification-status"
+          data-notification-status
+          aria-live="polite"
+        ></p>
+
+        <section
+          class="panel rule-form-panel"
+          data-notification-rule-form-panel
+          aria-labelledby="notification-rule-form-title"
+          hidden
+        >
+          <h2 id="notification-rule-form-title" data-rule-form-title>
+            新しい通知条件
+          </h2>
+          <p class="form-note">
+            施設と曜日はそれぞれ1件以上選択してください。
+            日付を空欄にすると、その方向の期間制限はありません。
+          </p>
+
+          <form data-notification-rule-form novalidate>
+            <div
+              class="form-errors"
+              data-form-errors
+              role="alert"
+              aria-live="polite"
+              tabindex="-1"
+              hidden
+            ></div>
+
+            <div class="field">
+              <label for="notification-rule-name">条件名</label>
+              <input
+                id="notification-rule-name"
+                name="name"
+                type="text"
+                maxlength="80"
+                autocomplete="off"
+                required
+                data-rule-name
+              >
+              <p class="form-note">80文字以内で、内容が分かる名前を付けてください。</p>
+            </div>
+
+            <fieldset
+              class="rule-fieldset"
+              data-facility-fieldset
+              tabindex="-1"
+            >
+              <legend>施設</legend>
+              <div
+                class="checkbox-grid checkbox-grid--facilities"
+                data-facility-options
+              >
+                <p class="muted">施設を読み込んでいます…</p>
+              </div>
+            </fieldset>
+
+            <fieldset
+              class="rule-fieldset"
+              data-weekday-fieldset
+              tabindex="-1"
+            >
+              <legend>曜日</legend>
+              <div class="checkbox-grid checkbox-grid--weekdays">
+                <label class="check-option">
+                  <input type="checkbox" name="weekdays" value="1" data-rule-weekday>
+                  <span>月曜日</span>
+                </label>
+                <label class="check-option">
+                  <input type="checkbox" name="weekdays" value="2" data-rule-weekday>
+                  <span>火曜日</span>
+                </label>
+                <label class="check-option">
+                  <input type="checkbox" name="weekdays" value="3" data-rule-weekday>
+                  <span>水曜日</span>
+                </label>
+                <label class="check-option">
+                  <input type="checkbox" name="weekdays" value="4" data-rule-weekday>
+                  <span>木曜日</span>
+                </label>
+                <label class="check-option">
+                  <input type="checkbox" name="weekdays" value="5" data-rule-weekday>
+                  <span>金曜日</span>
+                </label>
+                <label class="check-option">
+                  <input type="checkbox" name="weekdays" value="6" data-rule-weekday>
+                  <span>土曜日</span>
+                </label>
+                <label class="check-option">
+                  <input type="checkbox" name="weekdays" value="7" data-rule-weekday>
+                  <span>日曜日</span>
+                </label>
+              </div>
+            </fieldset>
+
+            <fieldset class="rule-fieldset">
+              <legend>対象期間</legend>
+              <div class="field-grid">
+                <div class="field">
+                  <label for="notification-rule-date-from">開始日（任意）</label>
+                  <input
+                    id="notification-rule-date-from"
+                    name="date_from"
+                    type="date"
+                    data-rule-date-from
+                  >
+                </div>
+                <div class="field">
+                  <label for="notification-rule-date-to">終了日（任意）</label>
+                  <input
+                    id="notification-rule-date-to"
+                    name="date_to"
+                    type="date"
+                    data-rule-date-to
+                  >
+                </div>
+              </div>
+            </fieldset>
+
+            <fieldset class="rule-fieldset">
+              <legend>対象時間帯</legend>
+              <div class="field-grid">
+                <div class="field">
+                  <label for="notification-rule-start-time">開始時刻</label>
+                  <input
+                    id="notification-rule-start-time"
+                    name="start_time"
+                    type="time"
+                    value="09:00"
+                    step="1800"
+                    required
+                    data-rule-start-time
+                  >
+                </div>
+                <div class="field">
+                  <label for="notification-rule-end-time">終了時刻</label>
+                  <input
+                    id="notification-rule-end-time"
+                    name="end_time"
+                    type="time"
+                    value="21:00"
+                    step="1800"
+                    required
+                    data-rule-end-time
+                  >
+                </div>
+              </div>
+            </fieldset>
+
+            <div class="field">
+              <label for="notification-rule-minimum-duration">
+                最低連続時間（分）
+              </label>
+              <input
+                id="notification-rule-minimum-duration"
+                name="minimum_duration_minutes"
+                type="number"
+                value="60"
+                min="30"
+                max="720"
+                step="30"
+                inputmode="numeric"
+                required
+                data-rule-minimum-duration
+              >
+              <p class="form-note">30〜720分の範囲で、30分単位で指定してください。</p>
+            </div>
+
+            <label class="check-option check-option--enabled">
+              <input
+                type="checkbox"
+                name="is_enabled"
+                data-rule-enabled
+              >
+              <span>
+                <strong>この通知条件を有効にする</strong>
+                <small>オフの場合は停止中として保存されます。</small>
+              </span>
+            </label>
+
+            <div class="button-row">
+              <button class="button" type="submit" data-save-rule>
+                通知条件を保存
+              </button>
+              <button
+                class="button button--secondary"
+                type="button"
+                data-cancel-rule
+              >
+                キャンセル
+              </button>
+            </div>
+          </form>
+        </section>
+
+        <div
+          class="notification-rule-list"
+          data-notification-rule-list
+          aria-labelledby="notification-rule-list-title"
+        ></div>
+
+        <section
+          class="status-card empty-state"
+          data-notification-empty
+          aria-labelledby="notification-empty-title"
+          hidden
+        >
+          <h2 id="notification-empty-title">通知条件はまだありません</h2>
+          <p>
+            「新しい条件を作成」から、希望する施設や曜日を登録してください。
+          </p>
+        </section>
+      </div>
+
+      <noscript>
+        <p class="notice">通知条件を操作するにはJavaScriptを有効にしてください。</p>
+      </noscript>
+    </main>
+
+    <footer class="site-footer">
+      <div class="site-footer__inner">
+        <span>© Tennis Court Watcher</span>
+        <nav class="footer-links" aria-label="フッターナビゲーション">
+          <a href="index.html">マイページ</a>
+          <a href="../index.html">空き状況</a>
+          <a href="../legal/terms.html">利用規約</a>
+          <a href="../legal/privacy.html">プライバシーポリシー</a>
+        </nav>
+      </div>
+    </footer>
+  </body>
+</html>
