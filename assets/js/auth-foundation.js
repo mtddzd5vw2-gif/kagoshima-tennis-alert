@@ -4,6 +4,8 @@
   const LOGIN_PATH = "../auth/login.html";
   const ACCOUNT_PATH = "../account/index.html";
   const PENDING_TERMS_KEY = "tcw.pendingTermsAcceptance";
+  const LOGIN_SESSION_TIMEOUT_MS = 8000;
+  const AUTHENTICATED_REDIRECT_DELAY_MS = 400;
 
   function getAuthConfig() {
     const config = window.TCW_AUTH_CONFIG;
@@ -97,12 +99,7 @@
     }).format(date);
   }
 
-  function setupLogin(client, config) {
-    const form = document.querySelector("[data-auth-form]");
-    if (!form) {
-      return;
-    }
-
+  function enableLoginForm(client, config, form) {
     const emailInput = form.elements.email;
     const consentInput = form.elements["terms-consent"];
     const submitButton = form.querySelector('button[type="submit"]');
@@ -164,6 +161,61 @@
     });
 
     updateSubmitState();
+    form.hidden = false;
+  }
+
+  async function getLoginSession(client) {
+    let timeoutId;
+    const timeout = new Promise((resolve, reject) => {
+      timeoutId = window.setTimeout(
+        () => reject(new Error("session_lookup_timeout")),
+        LOGIN_SESSION_TIMEOUT_MS,
+      );
+    });
+
+    try {
+      return await Promise.race([client.auth.getSession(), timeout]);
+    } finally {
+      window.clearTimeout(timeoutId);
+    }
+  }
+
+  async function setupLogin(client, config) {
+    const form = document.querySelector("[data-auth-form]");
+    const sessionStatus = document.querySelector(
+      "[data-login-session-status]",
+    );
+    if (!form || !sessionStatus) {
+      return;
+    }
+
+    try {
+      const result = await getLoginSession(client);
+      if (!result || result.error) {
+        throw new Error("session_lookup_failed");
+      }
+      if (result.data && result.data.session) {
+        setStatus(
+          sessionStatus,
+          "ログイン済みです。マイページへ移動します。",
+          "success",
+        );
+        await new Promise((resolve) => {
+          window.setTimeout(resolve, AUTHENTICATED_REDIRECT_DELAY_MS);
+        });
+        window.location.replace(ACCOUNT_PATH);
+        return;
+      }
+      sessionStatus.hidden = true;
+    } catch {
+      setStatus(
+        sessionStatus,
+        "ログイン状態を確認できませんでした。ログインが必要な場合は、以下からお試しください。",
+        "error",
+      );
+    }
+
+    enableLoginForm(client, config, form);
   }
 
   async function handleCallback(client) {
@@ -383,7 +435,7 @@
       logout.disabled = true;
       setStatus(status, "ログアウトしています…");
       try {
-        const { error } = await client.auth.signOut();
+        const { error } = await client.auth.signOut({ scope: "local" });
         if (error) {
           throw new Error("sign_out_failed");
         }
@@ -428,7 +480,10 @@
         );
       } else {
         setStatus(
-          document.querySelector("[data-form-status], [data-callback-status]"),
+          document.querySelector(
+            "[data-login-session-status], [data-form-status], " +
+              "[data-callback-status]",
+          ),
           "認証サービスを利用できません。時間をおいて再読み込みしてください。",
           "error",
         );
@@ -437,7 +492,7 @@
     }
 
     if (page === "auth-login") {
-      setupLogin(client, config);
+      await setupLogin(client, config);
     } else if (page === "auth-callback") {
       await handleCallback(client);
     } else if (page === "account") {

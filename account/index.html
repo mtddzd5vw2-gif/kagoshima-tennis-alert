@@ -66,6 +66,22 @@
 
         <section
           class="account-card account-card--full"
+          aria-labelledby="session-retention-title"
+        >
+          <h2 id="session-retention-title">このブラウザのログイン状態</h2>
+          <p>
+            このブラウザにはログイン状態が保持されています。
+            ブラウザを閉じても、通常は次回そのまま利用できます。
+          </p>
+          <p class="muted">
+            共有端末では、利用後にこのブラウザからログアウトしてください。
+            ログアウト、ブラウザデータの削除、セッションの無効化、別の端末や
+            ブラウザからの利用時には、再ログインが必要です。
+          </p>
+        </section>
+
+        <section
+          class="account-card account-card--full"
           data-terms-consent-panel
           aria-labelledby="terms-consent-title"
           hidden
@@ -102,11 +118,12 @@
         <section class="account-card" aria-labelledby="account-actions-title">
           <h2 id="account-actions-title">アカウント操作</h2>
           <p class="muted">
-            ログアウトできます。退会処理はまだ準備中です。
+            ログアウトは、このブラウザのセッションだけを終了します。
+            退会処理はまだ準備中です。
           </p>
           <div class="button-row">
             <button class="button button--secondary" type="button" data-sign-out disabled>
-              ログアウト
+              このブラウザからログアウト
             </button>
             <button class="button button--danger" type="button" disabled>
               退会する（準備中）
