@@ -2,9 +2,9 @@
 
 ## 1. 目的と責務境界
 
-本書は、Phase 2で使用する地域・施設マスター、利用者ごとの通知条件を保存するデータモデル、通知条件UI、原子的保存RPCを定義する。テーブル・RLS・初期マスターは `supabase/migrations/20260807000000_create_notification_rules.sql`、原子的保存RPCは `supabase/migrations/20260807100000_add_notification_rule_save_rpc.sql` に含める。
+本書は、Phase 2で使用する地域・施設マスター、利用者ごとの通知条件を保存するデータモデル、通知条件UI、原子的保存RPC、空き候補との照合エンジンを定義する。テーブル・RLS・初期マスターは `supabase/migrations/20260807000000_create_notification_rules.sql`、原子的保存RPCは `supabase/migrations/20260807100000_add_notification_rule_save_rpc.sql`、照合処理専用の取得RPCは `supabase/migrations/20260807110000_add_notification_rule_matching_rpc.sql` に含める。
 
-Phase 2は進行中である。通知条件の一覧・新規作成・編集・削除・一時停止・有効化UIと、条件本体・施設・曜日を1トランザクションで保存する `save_notification_rule` RPCを実装済みである。空き候補と有効な条件の照合ロジックは未実装である。
+Phase 2は進行中である。通知条件の一覧・新規作成・編集・削除・一時停止・有効化UI、条件本体・施設・曜日を1トランザクションで保存する `save_notification_rule` RPC、有効な条件と空き候補を照合する純粋Pythonエンジンを実装済みである。利用者ごとの条件数上限は未決定である。
 
 Phase 3の責務は、利用者別メール送信、配信キュー、再試行、バウンス・配信停止処理、通知履歴である。実際の利用者別メール送信は未実装であり、Phase 2のテーブルやmigrationへ含めない。
 
@@ -201,7 +201,7 @@ DBのcheck制約で1〜7だけを許可する。
 
 DBは文字列、時間順序、日付範囲、最低連続時間、曜日、外部キー、所有者の整合性を保証する。一方、通知条件本体を作ってから子テーブルを登録できるよう、施設または曜日が0件の不完全な条件もDB上は保存可能とする。
 
-Phase 2のUIと `save_notification_rule` RPCは、保存完了前に施設1件以上、曜日1件以上を必須検証する。UIは停止中の条件を有効化する前にも、現在読み込んでいる施設・曜日がそれぞれ1件以上あることを確認する。将来の照合処理でも、施設または曜日が0件の条件を `is_enabled` の値にかかわらず無効として扱う。
+Phase 2のUIと `save_notification_rule` RPCは、保存完了前に施設1件以上、曜日1件以上を必須検証する。UIは停止中の条件を有効化する前にも、現在読み込んでいる施設・曜日がそれぞれ1件以上あることを確認する。照合エンジンでも、施設または曜日が0件の条件を `is_enabled` の値にかかわらず無効として扱う。
 
 利用者ごとの条件数上限と無料プランの上限は未決定であり、現行UIとmigrationには実装しない。
 
@@ -222,9 +222,45 @@ active確認は既存 `profiles` の本人SELECT RLSを利用した単純な `ex
 
 `save_notification_rule` は `security invoker`、`set search_path = ''` のまま実行し、利用者ID引数を受け取らない。新規作成では `auth.uid()` を `user_id` に使用し、編集では条件IDと `auth.uid()` の両方に一致する本人所有行だけを更新する。本体・施設・曜日の全保存が成功した場合だけ条件IDを返し、途中の例外ではRPC呼び出し全体をロールバックする。実行権限は `PUBLIC` と `anon` から剥奪し、`authenticated` だけへ付与する。
 
-## 8. migrationの適用とロールバック
+`list_notification_rules_for_matching()` はGitHub Actionsなどの信頼されたサーバー処理専用である。`security invoker`、`stable`、`set search_path = ''` と完全修飾したオブジェクト名を使用し、既存RLS・policyを変更しない。active会員の有効かつ施設・曜日が各1件以上ある条件だけを返す。返却列は条件ID、利用者ID、日付範囲、開始・終了時刻、最低時間、施設ID配列、ISO曜日配列だけとし、メールアドレスは返さない。施設ID配列とISO曜日配列は重複排除してソートする。実行権限は `PUBLIC`、`anon`、`authenticated` から剥奪し、`service_role` だけへ付与するため、ブラウザのpublishable keyからは呼び出せない。
 
-通知条件テーブルmigrationの後に、原子的保存RPC migrationを1回だけ適用する。適用済みmigrationを編集・再実行せず、修正が必要な場合は新しいタイムスタンプのmigrationを追加する。
+## 8. 空き候補との照合
+
+`scripts/match_notification_rules.py` は外部通信と分離した純粋関数を中心に構成する。通知条件は `rule_id`、`user_id`、`is_enabled`、任意の `date_from` / `date_to`、`start_time` / `end_time`、`minimum_duration_minutes`、`facility_ids`、ISO 8601の `weekdays` を正規化して評価する。
+
+照合対象は、`availability.json` で日別entryの `status` が `success` かつ、枠の `status` が `available` のデータだけである。`error`、`selector_pending`、`fallback_from_previous` など正常取得でない日付に保持された過去データから、新しい一致候補を生成しない。
+
+条件は次をすべて満たした場合に一致する。
+
+- 条件が有効で、施設と曜日がそれぞれ1件以上ある。
+- 施設IDと、空き日付から求めたISO 8601曜日番号が一致する。
+- `date_from` がある場合はその日以降、`date_to` がある場合はその日以前である。境界日は含む。
+- 条件時間帯と空き時間帯が実際に重なる。
+- 重複部分の時間が `minimum_duration_minutes` 以上である。
+
+最低時間の判定には枠全体の `duration_minutes` ではなく、条件時間帯との重複時間を使う。例えば空きが08:30〜13:00、条件が09:00〜11:00、最低120分なら一致する。空きが10:00〜13:00で同じ条件・最低時間なら、重複は60分だけなので一致しない。祝日専用条件は設けず、月曜日の祝日は月曜日の条件だけに一致する。
+
+## 9. 照合結果と重複排除
+
+結果は利用者と `slot_id` の組み合わせを1件とする。同じ利用者の複数条件が同じ枠へ一致しても候補は1件にまとめ、`matched_rules` に条件ID、重複開始・終了時刻、重複分数を保持する。別利用者が同じ枠へ一致した場合は別候補とする。枠、候補、`matched_rules` は安定IDと日時で決定的にソートし、重複した入力枠も `slot_id` 単位で除去する。
+
+この結果はPhase 3がメールなどの各チャネルへ展開するためのプロセス内データであり、Phase 2では配信済み判定、キュー、再試行、通知履歴、実送信を行わない。利用者ID・条件IDを含むmatch詳細は `data/`、GitHub Pages、公開Artifactへ保存せず、CLIは評価条件数・枠数・利用者数・枠数・候補数の集計だけを出力する。
+
+## 10. Supabase取得とGitHub Actions
+
+CLIは標準ライブラリ `urllib` で `list_notification_rules_for_matching()` を呼び出す。HTTPSの `SUPABASE_URL` と `SUPABASE_SERVICE_ROLE_KEY` を必要とし、timeoutを設定する。Authorization header、apikey、service-role key、HTTPレスポンス本文、利用者ID、条件IDをログへ出さず、不正なJSONやルール形式では詳細を公開せず失敗する。新しい外部Pythonパッケージは使用しない。
+
+GitHub Actionsではスクレイピング完了後、`vars.ENABLE_NOTIFICATION_MATCHING == 'true'` のときだけ `run-output/availability.json` を照合する。`SUPABASE_URL` と `SUPABASE_SERVICE_ROLE_KEY` は照合stepの `env` だけへ渡す。match詳細や結果ファイルはArtifactとPagesへ追加せず、既存の単一通知先LINE通知、Pages配信、`reservation-page-snapshots` Artifactの構成を維持する。Phase 2照合は集計だけのシャドーモードであり、stepを `continue-on-error: true` とする。照合失敗はActions上のwarningとして確認するが、既存JSONのcommit、LINE状態更新、Pagesデプロイをブロックしない。
+
+Actionsを有効化するにはRepository Variable `ENABLE_NOTIFICATION_MATCHING=true` と `SUPABASE_URL`、Repository Secret `SUPABASE_SERVICE_ROLE_KEY` が必要である。service-role keyはブラウザ公開設定やジョブ全体の環境変数へ置かない。
+
+## 11. 現在の空き取得範囲
+
+現在のスクレイパーが取得する範囲は、今日を含む直近15日間の土日・日本の祝日、8:00〜13:00、連続60分以上である。平日、時間外、60分未満の通知条件も保存できるが、現時点ではその範囲の空きデータを取得しないため一致しない。この制限を `account/notifications.html` にも表示する。
+
+## 12. migrationの適用とロールバック
+
+通知条件テーブルmigrationの後に、原子的保存RPC migration、照合処理専用RPC migrationの順で各1回だけ適用する。適用済みmigrationを編集・再実行せず、修正が必要な場合は新しいタイムスタンプのmigrationを追加する。
 
 適用前に、対象Supabaseプロジェクトと環境、SQL全文、RLS、Grant、初期データをレビューする。空の検証環境では全migrationを時系列順に適用し、複数の架空ユーザーで本人・他人・inactive会員・anonの操作を実DB検証する。
 

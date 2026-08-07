@@ -33,6 +33,14 @@ def push_retry_loop(script: str) -> str:
     return match.group("body")
 
 
+def matching_step(workflow: dict[str, Any]) -> dict[str, Any]:
+    return next(
+        step
+        for step in workflow["jobs"]["update"]["steps"]
+        if step.get("name") == "Match notification rules"
+    )
+
+
 def test_data_update_concurrency_is_global_and_non_cancelling() -> None:
     workflow = load_workflow()
 
@@ -99,3 +107,57 @@ def test_deploy_pages_still_requires_a_successful_non_dry_run_update() -> None:
         "needs.update.result == 'success' && "
         "needs.update.outputs.deploy_pages == 'true'"
     )
+
+
+def test_notification_matching_is_variable_gated_after_scraping() -> None:
+    workflow = load_workflow()
+    steps = workflow["jobs"]["update"]["steps"]
+    step = matching_step(workflow)
+    names = [item.get("name") for item in steps]
+
+    assert step["if"] == "vars.ENABLE_NOTIFICATION_MATCHING == 'true'"
+    assert step["continue-on-error"] is True
+    assert names.index("Update availability and notification state") < names.index(
+        "Match notification rules"
+    )
+    assert names.index("Match notification rules") < names.index(
+        "Upload run data and reservation page snapshots"
+    )
+    assert "python scripts/match_notification_rules.py" in step["run"]
+    assert "--availability run-output/availability.json" in step["run"]
+
+
+def test_service_role_key_is_scoped_to_the_matching_step() -> None:
+    workflow = load_workflow()
+    step = matching_step(workflow)
+
+    assert step["env"] == {
+        "SUPABASE_URL": "${{ vars.SUPABASE_URL }}",
+        "SUPABASE_SERVICE_ROLE_KEY": (
+            "${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}"
+        ),
+    }
+    assert "SUPABASE_SERVICE_ROLE_KEY" not in workflow["jobs"]["update"]["env"]
+    assert "SUPABASE_SERVICE_ROLE_KEY" not in workflow["jobs"]["deploy-pages"]["env"]
+    assert "echo" not in step["run"].lower()
+
+
+def test_matching_details_are_not_added_to_artifacts_or_pages() -> None:
+    workflow = load_workflow()
+    update_steps = workflow["jobs"]["update"]["steps"]
+    artifact_step = next(
+        step
+        for step in update_steps
+        if step.get("name") == "Upload run data and reservation page snapshots"
+    )
+    artifact_path = artifact_step["with"]["path"]
+    pages_script = next(
+        step["run"]
+        for step in workflow["jobs"]["deploy-pages"]["steps"]
+        if step.get("name") == "Prepare GitHub Pages files"
+    )
+
+    assert "match-result" not in artifact_path
+    assert "match-result" not in pages_script
+    assert "match_candidates" not in artifact_path
+    assert "match_candidates" not in pages_script

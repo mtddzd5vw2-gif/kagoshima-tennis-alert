@@ -228,7 +228,7 @@ Phase 1はマジックリンク認証を採用するため、パスワードの�
 
 ## 11. 通知条件
 
-通知条件設定はPhase 2で提供し、現在は進行中である。通知条件の一覧・新規作成・編集・一時停止・有効化・削除UIと原子的保存RPCは実装済みである。Phase 2は条件管理と空き候補に対する照合結果の生成までを責務とするが、照合ロジックは未実装である。Phase 3の利用者別メール実送信も未実装である。
+通知条件設定はPhase 2で提供し、現在は進行中である。通知条件の一覧・新規作成・編集・一時停止・有効化・削除UI、原子的保存RPC、純粋Pythonの照合エンジン、service-role専用の条件取得RPCは実装済みである。Phase 2は条件管理と空き候補に対する照合結果の生成までを責務とする。条件数上限は未決定であり、Phase 3の利用者別メール実送信も未実装である。
 
 ### 11.1 確定データ構造
 
@@ -246,15 +246,22 @@ Phase 1はマジックリンク認証を採用するため、パスワードの�
 
 通知条件UIは、active会員本人の条件だけをRLS配下で読み込み、施設1件以上・曜日1件以上を含む入力検証を行う。作成と編集は `save_notification_rule` RPCを使用し、条件本体・施設・曜日を1トランザクションで保存する。RPCは利用者ID引数を受け取らず、`security invoker`、`auth.uid()`、`set search_path = ''`、既存RLSを維持する。一時停止と有効化は本人行の `is_enabled` 更新、削除は本人行のDELETEを使用する。不完全な条件はUIから有効化しない。
 
-現行の「直近15日間、土日祝、8:00〜13:00、1時間以上」はPhase 0の監視範囲である。
+現行の「直近15日間、土日・日本の祝日、8:00〜13:00、60分以上」はPhase 0の監視・取得範囲である。平日、時間外、60分未満の条件も保存できるが、その範囲の空きデータを取得しないため現時点では一致しない。祝日は祝日専用条件ではなく、実際の日付のISO曜日で判定する。この制限は通知条件画面にも表示する。
 
 ### 11.2 照合ルール
 
 - スクレイパーが正規化した空き枠と、有効な利用者条件を通知エンジンが照合する。
-- 同一利用者の複数条件が同じ枠へ一致しても、同一チャネルでは原則1件にまとめる。
-- 空き枠の安定ID、利用者ID、チャネルを使って重複を防止する。
-- 一度消えた枠が再出現した場合に再通知するか、その待機時間は**要決定**。
-- 取得エラー中の過去データを新規空きとして通知しない。
+- 日別entryが `status = success`、枠が `status = available` の場合だけ照合する。`error`、`selector_pending`、`fallback_from_previous` などの保持データから新しい一致を生成しない。
+- 条件が有効で施設と曜日が各1件以上あり、施設ID、空き日付のISO曜日、任意の `date_from` / `date_to` を満たすことを確認する。日付境界は含む。
+- 条件時間帯と空き時間帯の実際の重複分数を求め、`minimum_duration_minutes` 以上の場合だけ一致する。枠全体の `duration_minutes` は最低時間判定に使わない。
+- 同一利用者の複数条件が同じ `slot_id` へ一致しても、利用者・`slot_id` の候補は1件にまとめる。一致した条件は、条件ID、重複開始・終了時刻、重複分数を持つ `matched_rules` として決定的にソートする。
+- 同じ `slot_id` でも利用者が異なる場合は別候補とする。入力枠の重複は `slot_id` 単位で除去し、候補順も決定的にする。
+- チャネルへの展開、配信済み判定、一度消えた枠の再通知、待機時間、キュー、再試行、通知履歴はPhase 3で決定する。
+- match詳細は `data/`、GitHub Pages、公開Artifactへ保存せず、CLIログは評価件数と一致件数の集計だけを出力する。
+
+通知条件は `list_notification_rules_for_matching()` から取得する。このRPCはactive会員の有効かつ施設・曜日が各1件以上ある条件だけを対象に、条件ID、利用者ID、日付範囲、開始・終了時刻、最低時間、施設ID配列、ISO曜日配列だけを返し、メールアドレスを返さない。`security invoker`、`stable`、空の `search_path`、完全修飾名を使用し、既存RLSやpolicyを変更しない。実行権限は `PUBLIC`、`anon`、`authenticated` から剥奪して `service_role` だけへ付与するため、Web UIやpublishable keyからは呼び出せない。
+
+GitHub Actionsはスクレイピング後、`ENABLE_NOTIFICATION_MATCHING=true` の場合だけ `run-output/availability.json` を照合する。`SUPABASE_URL` とRepository Secret `SUPABASE_SERVICE_ROLE_KEY` は照合stepだけへ渡し、ジョブ全体、Pages、Artifactへ渡さない。service-role key、Authorization header、apikey、利用者ID、条件ID、レスポンス本文をログへ出さない。Phase 2照合は集計だけのシャドーモードで、照合stepの失敗はwarningとして確認しつつ、既存の取得・単一宛先LINE・JSON commit・Pages更新を継続する。実行前に、対象環境で照合用migrationが適用済みか確認する。
 
 ## 12. メール通知
 
@@ -344,7 +351,7 @@ Phase 1会員・規約テーブルに加え、Phase 2の地域・施設マスタ
 
 Phase 2の初期データは鹿児島市とテニスコート種別、鴨池県営テニスコート、SuMIzeiテニスコート、東開庭球場である。予約対象リソース、取得元、取得実行、空き枠のDBモデルは後続の候補であり、今回実装しない。現在の `availability.json` と `notification-state.json` は変更・廃止しない。
 
-Phase 2のテーブル・RLS・初期マスターと `save_notification_rule` RPCはmigrationとしてリポジトリへ追加している。リポジトリへの追加だけではSupabase環境へ自動適用されないため、適用状況は対象環境ごとのmigration履歴で確認する。
+Phase 2のテーブル・RLS・初期マスター、`save_notification_rule` RPC、service-role専用 `list_notification_rules_for_matching` RPCはmigrationとしてリポジトリへ追加している。リポジトリへの追加だけではSupabase環境へ自動適用されないため、適用状況は対象環境ごとのmigration履歴で確認する。適用済みmigrationは変更せず、修正は新しいmigrationで前方適用する。
 
 ### 15.3 通知
 
@@ -395,6 +402,7 @@ Phase 2のテーブル・RLS・初期マスターと `save_notification_rule` RP
 - `accept_current_terms()` はauthenticatedだけがEXECUTEでき、anonとPUBLICから実行権限を剥奪する。
 - `notification_rules`と関連表: `authenticated` のうち、本人かつ `profiles.membership_status = 'active'` の利用者だけがCRUD可能。条件数上限は未決定・未実装である。
 - `save_notification_rule()` は `security invoker` と既存RLSのまま動作し、`auth.uid()` で本人を確定する。PUBLICとanonから実行権限を剥奪し、authenticatedだけにEXECUTEを許可する。
+- `list_notification_rules_for_matching()` は `security invoker` のservice-role専用RPCとし、ブラウザロールへEXECUTEを許可しない。メールアドレスは返さない。
 - `notification_events`: 本人は必要な表示項目だけ参照可能。生成・状態更新は通知エンジンに限定する。
 - `regions`、`facility_types`、`facilities`: `authenticated` はSELECTのみ可能とし、`anon` にはDB参照権限を与えない。ブラウザroleによるINSERT、UPDATE、DELETEは許可しない。
 
@@ -411,6 +419,7 @@ Phase 2のテーブル・RLS・初期マスターと `save_notification_rule` RP
 ### 17.2 Secret管理
 
 - Secretはホスティング基盤またはGitHub Actions Secrets等の専用機能で管理する。
+- Phase 2照合用 `SUPABASE_SERVICE_ROLE_KEY` は照合stepだけへ渡し、ジョブ全体の環境変数、ブラウザ、Pages、公開Artifact、ログへ出さない。
 - ブラウザへ配布可能な公開キーと、Service Role、メール・LINE・決済の秘密鍵を区別する。
 - Resend APIキーはドメイン限定のSending accessで作成し、Supabase Custom SMTP passwordとしてだけ使用する。APIキーの値自体は本仕様書へ記載しない。
 - 本番Secretへのアクセス権を最小化し、ローテーション手順を用意する。
@@ -477,7 +486,7 @@ Phase 2のテーブル・RLS・初期マスターと `save_notification_rule` RP
 - 会員基盤はPhase 0と独立して追加し、最初からスクレイパーへ認証依存を持ち込まない。
 - 会員機能の障害時も、公開Pagesと既存LINE通知を継続できる構成にする。
 - データベース導入後も、Pagesが必要とする公開データの生成を維持する。
-- 利用者別通知をシャドーモードで照合・記録してから送信を有効化する案。実施方法は**要決定**。
+- Phase 2では有効化Variableで照合だけを実行し、集計ログだけで確認する。match詳細の記録、配信キューへの保存、送信の有効化方法はPhase 3で決定する。
 - 既存LINE通知を停止するのは、利用者別LINE通知の重複防止、監視、ロールバックを確認した後とする。
 
 ## 21. 全国展開方針

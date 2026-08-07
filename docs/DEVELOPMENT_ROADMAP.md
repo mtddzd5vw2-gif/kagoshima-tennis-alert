@@ -301,14 +301,20 @@ Phase 1全体を運用可能な品質にし、Phase 0へ影響を与えずに公
 - 利用者ごとの条件数上限（上限値は**要決定**）
 - 条件と現在の空き候補を照合する評価ロジック
 
-### 実装状況（2026-08-06）
+### 実装状況（2026-08-07）
 
 - 地域・施設種別・施設マスターと、通知条件・施設・曜日のデータモデルをmigrationへ追加した。
 - 本人かつactive会員だけが通知条件を操作できるRLSと、マスターをauthenticated read-onlyにする最小権限を追加した。
 - 通知条件の一覧・新規作成・編集・一時停止・有効化・削除UIを追加した。
 - 条件本体・施設・曜日を1トランザクションで保存する `save_notification_rule` RPCを追加した。
-- [Phase 2 通知条件データモデル設計](./PHASE2_NOTIFICATION_RULES_DESIGN.md)とUI・RPCの静的テストを追加した。
-- Phase 2は進行中である。空き候補との照合ロジックは未実装で、条件数上限は未決定である。
+- 日別取得が `success` の空き枠と有効な条件を、施設、ISO曜日、任意の日付範囲、実際の時間帯重複で判定する純粋Python照合エンジンを追加した。
+- 同一利用者・同一 `slot_id` を1候補にまとめ、複数の一致条件を決定的にソートした `matched_rules` として保持する。別利用者は別候補とする。
+- active会員の有効かつ完全な条件だけを返す `list_notification_rules_for_matching()` を、`security invoker` のservice-role専用RPCとして追加した。
+- GitHub Actionsは `ENABLE_NOTIFICATION_MATCHING=true` の場合だけスクレイピング後に照合し、service-role keyをそのstepのSecret環境変数だけへ渡す。集計だけのシャドーモードとして照合失敗をwarningに留め、既存の取得・LINE・JSON commit・Pages更新をブロックしない。
+- match詳細は `data/`、GitHub Pages、公開Artifactへ保存せず、CLIログも集計値だけとする。
+- 現在の取得範囲は直近15日間の土日・日本の祝日、8:00〜13:00、60分以上である。範囲外の条件も保存できるが、対象データを取得しないため現時点では一致しない。祝日は実際の日付の曜日で判定する。
+- [Phase 2 通知条件データモデル設計](./PHASE2_NOTIFICATION_RULES_DESIGN.md)とUI・RPC・照合エンジン・workflowの静的テストを追加した。
+- Phase 2は進行中である。照合エンジンは実装済みだが、条件数上限は未決定である。
 - Phase 3の利用者別メール実送信は未実装である。
 - リポジトリへのmigration追加だけではSupabase環境へ自動適用されないため、適用状況は環境ごとに確認する。
 
@@ -317,7 +323,7 @@ Phase 1全体を運用可能な品質にし、Phase 0へ影響を与えずに公
 - 認証済み会員が自分の条件だけを管理できる。
 - GPSを使わず、利用者の明示選択で対象地域・施設が決まる。
 - 現在の鹿児島市向け条件を保存でき、将来の地域・施設種別追加でも条件スキーマを流用できる。
-- 同じ空きに複数条件が一致しても、チャネルごとに重複通知しない照合結果を生成できる。
+- 同じ利用者の同じ空きに複数条件が一致しても、利用者・`slot_id` ごとに1件の照合結果を生成できる。
 - 無料プランの条件数上限は**要決定**。
 
 ### 対象外
@@ -327,6 +333,10 @@ Phase 1全体を運用可能な品質にし、Phase 0へ影響を与えずに公
 - AIによる空き予測
 
 Phase 2は通知条件の保存・編集・停止と照合結果の生成までを担当する。条件に基づいて実際に利用者別メールを送信する処理はPhase 3で実装する。
+
+Actionsで照合を実行するには、Repository Variable
+`ENABLE_NOTIFICATION_MATCHING=true` と `SUPABASE_URL`、Repository Secret
+`SUPABASE_SERVICE_ROLE_KEY` が必要である。照合用migrationの適用状況は環境ごとに確認し、適用済みmigrationは編集しない。
 
 ---
 
