@@ -121,6 +121,27 @@ def test_notification_page_has_required_form_controls_and_accessibility() -> Non
     assert form.find(attrs={"data-form-errors": True})["aria-live"] == "polite"
 
 
+def test_notification_page_has_rule_count_and_limit_guidance() -> None:
+    soup = BeautifulSoup(read(PAGE_PATH), "html.parser")
+    rule_count = soup.find(attrs={"data-notification-rule-count": True})
+    limit_guidance = soup.find(
+        attrs={"data-notification-rule-limit": True}
+    )
+    new_rule_button = soup.find("button", attrs={"data-new-rule": True})
+
+    assert rule_count
+    assert rule_count.get_text(" ", strip=True) == "登録済み 0 / 5件"
+    assert rule_count["aria-live"] == "polite"
+    assert limit_guidance
+    assert limit_guidance.has_attr("hidden")
+    assert limit_guidance["aria-live"] == "polite"
+    assert limit_guidance.get_text(" ", strip=True) == (
+        "通知条件は最大5件まで登録できます。"
+        "追加するには既存の条件を削除してください。"
+    )
+    assert new_rule_button.get_text(" ", strip=True) == "新しい通知条件"
+
+
 def test_account_and_notification_pages_link_to_each_other_and_availability() -> None:
     account = BeautifulSoup(read(ACCOUNT_PATH), "html.parser")
     notifications = BeautifulSoup(read(PAGE_PATH), "html.parser")
@@ -250,6 +271,125 @@ def test_notification_script_uses_atomic_rpc_and_scoped_direct_mutations() -> No
     assert "control.disabled = isBusy" in script
 
 
+def test_notification_script_displays_and_enforces_the_five_rule_ui_limit() -> None:
+    script = read(SCRIPT_PATH)
+    availability = script_section(
+        script,
+        "function updateActionAvailability",
+        "function setMutationBusy",
+    )
+    open_form = script_section(
+        script,
+        "function openRuleForm",
+        "function closeRuleForm",
+    )
+    save = script_section(
+        script,
+        "async function saveRule",
+        "async function start",
+    )
+
+    assert "const MAX_NOTIFICATION_RULES = 5;" in script
+    assert (
+        "`登録済み ${rules.length} / ${MAX_NOTIFICATION_RULES}件`"
+        in script
+    )
+    assert (
+        "ruleLimitGuidance.hidden = !hasReachedNotificationRuleLimit();"
+        in script
+    )
+    assert "hasReachedNotificationRuleLimit()" in availability
+    assert "newRuleButton.disabled" in availability
+
+    action_loop = availability[
+        availability.index(
+            'for (const button of ruleList.querySelectorAll("[data-rule-action]"))'
+        ):
+    ]
+    assert "button.disabled = disableListActions;" in action_loop
+    assert "MAX_NOTIFICATION_RULES" not in action_loop
+    assert "hasReachedNotificationRuleLimit" not in action_loop
+
+    assert "if (!rule && hasReachedNotificationRuleLimit())" in open_form
+    assert "NOTIFICATION_RULE_LIMIT_MESSAGE" in open_form
+    assert "const wasEditing = editingRuleId !== null;" in save
+    assert "if (!wasEditing && hasReachedNotificationRuleLimit())" in save
+    assert save.index("const wasEditing = editingRuleId !== null;") < (
+        save.index('client.rpc(\n        "save_notification_rule"')
+    )
+
+
+def test_limit_error_is_translated_and_refreshes_the_actual_rule_count() -> None:
+    script = read(SCRIPT_PATH)
+    refresh = script_section(
+        script,
+        "async function refreshNotificationDataAfterMutation",
+        "function isNotificationRuleLimitError",
+    )
+    error_check = script_section(
+        script,
+        "function isNotificationRuleLimitError",
+        "function canEnableRule",
+    )
+    save = script_section(
+        script,
+        "async function saveRule",
+        "async function start",
+    )
+    japanese_message = (
+        "通知条件は最大5件まで登録できます。"
+        "追加するには既存の条件を削除してください。"
+    )
+
+    assert japanese_message in script
+    assert "Notification rule limit of 5 has been reached." in script
+    assert "error.message.includes(NOTIFICATION_RULE_LIMIT_DB_MESSAGE)" in (
+        error_check
+    )
+    assert "await loadNotificationData()" in refresh
+    assert (
+        "保存は完了しておらず、一覧を再読み込みできませんでした。"
+        in refresh
+    )
+    assert "ページを再読み込みしてください。" in refresh
+    assert "操作を繰り返さないでください。" in refresh
+    assert "if (result && isNotificationRuleLimitError(result.error))" in save
+    assert (
+        "await refreshNotificationDataAfterMutation(\n"
+        "          NOTIFICATION_RULE_LIMIT_MESSAGE,\n"
+        "          false,"
+    ) in save
+    assert "formOpen = false;" in save
+    assert save.index("await refreshNotificationDataAfterMutation(") < (
+        save.index("setFormBusy(false);")
+    )
+
+
+def test_delete_refresh_reenables_creation_when_rule_count_drops() -> None:
+    script = read(SCRIPT_PATH)
+    delete = script_section(
+        script,
+        "async function deleteRule",
+        "async function saveRule",
+    )
+    render = script_section(
+        script,
+        "function renderRules",
+        "function renderFacilityOptions",
+    )
+
+    assert 'await refreshNotificationDataAfterMutation("通知条件を削除しました。")' in (
+        delete
+    )
+    assert "renderRules();" in script_section(
+        script,
+        "async function loadNotificationData",
+        "async function refreshNotificationDataAfterMutation",
+    )
+    assert "updateActionAvailability();" in render
+    assert "rules.length >= MAX_NOTIFICATION_RULES" in script
+
+
 def test_mutation_failure_and_post_success_refresh_failure_are_distinct() -> None:
     script = read(SCRIPT_PATH)
     refresh_helper = script_section(
@@ -294,7 +434,7 @@ def test_mutation_failure_and_post_success_refresh_failure_are_distinct() -> Non
     assert "通知条件を削除できませんでした" in operations["delete"]
     assert "通知条件を保存できませんでした" in operations["save"]
     assert operations["save"].index("通知条件を保存できませんでした") < (
-        operations["save"].index("await refreshNotificationDataAfterMutation(")
+        operations["save"].rindex("await refreshNotificationDataAfterMutation(")
     )
     assert operations["save"].index("formPanel.hidden = true") < (
         operations["save"].index("await refreshNotificationDataAfterMutation(")
@@ -336,14 +476,14 @@ def test_phase_two_documents_describe_current_progress_and_remaining_scope() -> 
     readme = read(README_PATH)
     documents = (design, roadmap, service_spec, readme)
 
-    assert "Phase 2は進行中" in design
+    assert "Phase 2は完了" in design
     assert "一覧・新規作成・編集・削除・一時停止・有効化UI" in design
     assert "`save_notification_rule` RPC" in design
     assert "画面と照合処理は未実装" not in design
     assert "今回の実装時点では本番Supabaseへ未適用" not in design
 
-    assert "| Phase 2 | 進行中 |" in roadmap
-    assert "**状態: 進行中**" in roadmap
+    assert "| Phase 2 | 完了 |" in roadmap
+    assert "**状態: 完了**" in roadmap
     assert "| Phase 2 | 次に着手 |" not in roadmap
     assert "**状態: 次に着手**" not in roadmap
 
@@ -353,14 +493,16 @@ def test_phase_two_documents_describe_current_progress_and_remaining_scope() -> 
     )
     assert "照合エンジン" in service_spec
 
-    assert "Phase 2は進行中" in readme
-    assert "通知条件UIは実装済み" in readme
+    assert "Phase 2は完了" in readme
+    assert "「登録済み n / 5件」" in readme
     assert "通知条件UI、照合ロジック、退会処理は未実装" not in readme
     assert "このmigrationはSupabase環境へまだ適用していません" not in readme
 
     for document in documents:
-        assert "条件数上限" in document
-        assert "未決定" in document
+        assert "最大5件" in document
+        assert "停止中" in document
+        assert "advisory" in document
+        assert "削除" in document
         assert "Phase 3" in document
         assert "メール" in document
         assert "未実装" in document
