@@ -3,7 +3,7 @@
 ## 1. 文書の目的
 
 本書は、Tennis Court Watcherの利用者向け機能、主要データ、認証・認可、システム責務、拡張方針を定義する。
-現行の空き監視をPhase 0、完成済みの会員基盤をPhase 1として扱う。Phase 2の通知条件設定は進行中である。
+現行の空き監視をPhase 0、完成済みの会員基盤をPhase 1として扱う。Phase 2の通知条件設定は完了している。
 開発順序とPhaseごとの完了条件は[Development Roadmap](./DEVELOPMENT_ROADMAP.md)を参照する。
 
 「案」と記載した項目は設計候補であり、未確定事項は**要決定**と明記する。
@@ -228,7 +228,7 @@ Phase 1はマジックリンク認証を採用するため、パスワードの�
 
 ## 11. 通知条件
 
-通知条件設定はPhase 2で提供し、現在は進行中である。通知条件の一覧・新規作成・編集・一時停止・有効化・削除UI、原子的保存RPC、純粋Pythonの照合エンジン、service-role専用の条件取得RPCは実装済みである。Phase 2は条件管理と空き候補に対する照合結果の生成までを責務とする。条件数上限は未決定であり、Phase 3の利用者別メール実送信も未実装である。
+通知条件設定はPhase 2で提供し、実装は完了している。通知条件の一覧・新規作成・編集・一時停止・有効化・削除UI、原子的保存RPC、1利用者5件の上限、純粋Pythonの照合エンジン、service-role専用の条件取得RPCは実装済みである。Phase 2は条件管理と空き候補に対する照合結果の生成までを責務とする。Phase 3の利用者別メール実送信は未実装である。
 
 ### 11.1 確定データ構造
 
@@ -241,10 +241,15 @@ Phase 1はマジックリンク認証を採用するため、パスワードの�
 - 最低連続時間は30〜720分の30分単位とする。
 - `is_enabled` は有効・一時停止状態を表し、子テーブル登録前の不完全な条件を誤って有効扱いしないよう初期値を `false` とする。
 - DB上は施設または曜日が0件の不完全な条件を保存できる。UIでは施設1件以上・曜日1件以上を必須検証し、照合処理では0件の条件を無効として扱う。
+- 通知条件は有効・停止中を含めて1利用者最大5件とする。5件でも既存条件の編集・有効化・一時停止・削除は可能で、削除すれば再び追加できる。
 
-条件数上限と無料プランの上限、利用者が設定可能な最大期間は**要決定**であり、今回のデータモデルでは制限しない。通知チャネル、配信キュー、再試行、配信停止、通知履歴はPhase 3以降の責務であり、Phase 2の通知条件には含めない。
+無料・有料プランごとの差分と利用者が設定可能な最大期間は**要決定**である。通知チャネル、配信キュー、再試行、配信停止、通知履歴はPhase 3以降の責務であり、Phase 2の通知条件には含めない。
 
-通知条件UIは、active会員本人の条件だけをRLS配下で読み込み、施設1件以上・曜日1件以上を含む入力検証を行う。作成と編集は `save_notification_rule` RPCを使用し、条件本体・施設・曜日を1トランザクションで保存する。RPCは利用者ID引数を受け取らず、`security invoker`、`auth.uid()`、`set search_path = ''`、既存RLSを維持する。一時停止と有効化は本人行の `is_enabled` 更新、削除は本人行のDELETEを使用する。不完全な条件はUIから有効化しない。
+通知条件UIは、active会員本人の条件だけをRLS配下で読み込み、「登録済み n / 5件」を表示し、施設1件以上・曜日1件以上を含む入力検証を行う。5件では新規作成ボタンを無効化して既存条件の削除を案内し、削除後の再取得で4件以下になれば再び有効化する。新規フォーム開始時と保存直前にも件数を確認するが、編集・有効化・一時停止・削除は上限の影響を受けない。
+
+作成と編集は `save_notification_rule` RPCを使用し、条件本体・施設・曜日を1トランザクションで保存する。RPCは利用者ID引数を受け取らず、`security invoker`、`auth.uid()`、`set search_path = ''`、既存RLSを維持する。新規作成のINSERTはDBの上限triggerを通るため、RPC経由の6件目も拒否される。編集は `user_id` を変更しないUPDATEであり、5件時も保存できる。一時停止と有効化は本人行の `is_enabled` 更新、削除は本人行のDELETEを使用する。不完全な条件はUIから有効化しない。
+
+上限の最終的な強制箇所は `notification_rules` の `before insert or update of user_id` triggerである。`security invoker` と空の `search_path` を使用し、RLSや既存policyを変更しない。新規作成または所有者変更時は、`new.user_id` から生成した安定した64bitキーでtransaction advisory lockを取得してから移動先の全条件を数える。同一利用者の並行作成を直列化し、6件以上になる操作を拒否する。DBの競合エラーはUIで日本語へ変換し、一覧を再取得して実件数とボタン状態を同期する。
 
 現行の「直近15日間、土日・日本の祝日、8:00〜13:00、60分以上」はPhase 0の監視・取得範囲である。平日、時間外、60分未満の条件も保存できるが、その範囲の空きデータを取得しないため現時点では一致しない。祝日は祝日専用条件ではなく、実際の日付のISO曜日で判定する。この制限は通知条件画面にも表示する。
 
@@ -351,7 +356,7 @@ Phase 1会員・規約テーブルに加え、Phase 2の地域・施設マスタ
 
 Phase 2の初期データは鹿児島市とテニスコート種別、鴨池県営テニスコート、SuMIzeiテニスコート、東開庭球場である。予約対象リソース、取得元、取得実行、空き枠のDBモデルは後続の候補であり、今回実装しない。現在の `availability.json` と `notification-state.json` は変更・廃止しない。
 
-Phase 2のテーブル・RLS・初期マスター、`save_notification_rule` RPC、service-role専用 `list_notification_rules_for_matching` RPCはmigrationとしてリポジトリへ追加している。リポジトリへの追加だけではSupabase環境へ自動適用されないため、適用状況は対象環境ごとのmigration履歴で確認する。適用済みmigrationは変更せず、修正は新しいmigrationで前方適用する。
+Phase 2のテーブル・RLS・初期マスター、`save_notification_rule` RPC、service-role専用 `list_notification_rules_for_matching` RPC、1利用者5件の上限triggerはmigrationとしてリポジトリへ追加している。リポジトリへの追加だけではSupabase環境へ自動適用されないため、適用状況は対象環境ごとのmigration履歴で確認する。上限migrationは、適用前に既に6件以上を持つ利用者がいる場合、利用者IDやメールアドレスを表示せず失敗する。適用済みmigrationは変更せず、修正は新しいmigrationで前方適用する。
 
 ### 15.3 通知
 
@@ -400,7 +405,8 @@ Phase 2のテーブル・RLS・初期マスター、`save_notification_rule` RPC
 - `terms_acceptances`: `user_id = auth.uid()` の本人だけがSELECT可能。ブラウザからのINSERT/UPDATE/DELETEは許可しない。
 - `legal_document_versions`: authenticated利用者はcurrentのtermsだけをSELECT可能。anonにはDB権限を与えない。
 - `accept_current_terms()` はauthenticatedだけがEXECUTEでき、anonとPUBLICから実行権限を剥奪する。
-- `notification_rules`と関連表: `authenticated` のうち、本人かつ `profiles.membership_status = 'active'` の利用者だけがCRUD可能。条件数上限は未決定・未実装である。
+- `notification_rules`と関連表: `authenticated` のうち、本人かつ `profiles.membership_status = 'active'` の利用者だけがCRUD可能。1利用者最大5件をDB triggerで強制し、有効・停止中の両方を数える。
+- `enforce_notification_rule_limit()` は `security invoker` と既存RLSのままtriggerから実行する。PUBLIC、anon、authenticatedには直接EXECUTEを許可しない。
 - `save_notification_rule()` は `security invoker` と既存RLSのまま動作し、`auth.uid()` で本人を確定する。PUBLICとanonから実行権限を剥奪し、authenticatedだけにEXECUTEを許可する。
 - `list_notification_rules_for_matching()` は `security invoker` のservice-role専用RPCとし、ブラウザロールへEXECUTEを許可しない。メールアドレスは返さない。
 - `notification_events`: 本人は必要な表示項目だけ参照可能。生成・状態更新は通知エンジンに限定する。

@@ -2,6 +2,11 @@
   "use strict";
 
   const LOGIN_PATH = "../auth/login.html";
+  const MAX_NOTIFICATION_RULES = 5;
+  const NOTIFICATION_RULE_LIMIT_MESSAGE =
+    "通知条件は最大5件まで登録できます。追加するには既存の条件を削除してください。";
+  const NOTIFICATION_RULE_LIMIT_DB_MESSAGE =
+    "Notification rule limit of 5 has been reached.";
   const WEEKDAY_LABELS = new Map([
     [1, "月曜日"],
     [2, "火曜日"],
@@ -19,6 +24,10 @@
   const content = document.querySelector("[data-notification-content]");
   const status = document.querySelector("[data-notification-status]");
   const newRuleButton = document.querySelector("[data-new-rule]");
+  const ruleCount = document.querySelector("[data-notification-rule-count]");
+  const ruleLimitGuidance = document.querySelector(
+    "[data-notification-rule-limit]",
+  );
   const ruleList = document.querySelector("[data-notification-rule-list]");
   const emptyState = document.querySelector("[data-notification-empty]");
   const formPanel = document.querySelector(
@@ -116,11 +125,24 @@
     return facilities.filter((facility) => facility.is_active === true);
   }
 
+  function hasReachedNotificationRuleLimit() {
+    return rules.length >= MAX_NOTIFICATION_RULES;
+  }
+
+  function updateNotificationRuleLimitDisplay() {
+    ruleCount.textContent =
+      `登録済み ${rules.length} / ${MAX_NOTIFICATION_RULES}件`;
+    ruleLimitGuidance.hidden = !hasReachedNotificationRuleLimit();
+  }
+
   function updateActionAvailability() {
     const disableListActions =
       mutationBusy || formSubmitting || formOpen || refreshFailed;
+    updateNotificationRuleLimitDisplay();
     newRuleButton.disabled =
-      disableListActions || activeFacilities().length === 0;
+      disableListActions ||
+      activeFacilities().length === 0 ||
+      hasReachedNotificationRuleLimit();
     for (const button of ruleList.querySelectorAll("[data-rule-action]")) {
       button.disabled = disableListActions;
     }
@@ -453,6 +475,12 @@
   }
 
   function openRuleForm(rule = null) {
+    if (!rule && hasReachedNotificationRuleLimit()) {
+      setStatus(status, NOTIFICATION_RULE_LIMIT_MESSAGE, "error");
+      updateActionAvailability();
+      return;
+    }
+
     form.reset();
     clearFormErrors();
     setStatus(status, "");
@@ -553,7 +581,10 @@
     renderRules();
   }
 
-  async function refreshNotificationDataAfterMutation(successMessage) {
+  async function refreshNotificationDataAfterMutation(
+    successMessage,
+    mutationCompleted = true,
+  ) {
     try {
       await loadNotificationData();
     } catch {
@@ -561,7 +592,9 @@
       updateActionAvailability();
       setStatus(
         status,
-        "変更は完了しましたが、一覧を再読み込みできませんでした。" +
+        (mutationCompleted
+          ? "変更は完了しましたが、一覧を再読み込みできませんでした。"
+          : "保存は完了しておらず、一覧を再読み込みできませんでした。") +
           "ページを再読み込みしてください。操作を繰り返さないでください。",
         "error",
       );
@@ -570,8 +603,16 @@
 
     refreshFailed = false;
     updateActionAvailability();
-    setStatus(status, successMessage, "success");
+    setStatus(status, successMessage, mutationCompleted ? "success" : "error");
     return true;
+  }
+
+  function isNotificationRuleLimitError(error) {
+    return (
+      error &&
+      typeof error.message === "string" &&
+      error.message.includes(NOTIFICATION_RULE_LIMIT_DB_MESSAGE)
+    );
   }
 
   function canEnableRule(ruleId) {
@@ -681,6 +722,13 @@
       return;
     }
 
+    const wasEditing = editingRuleId !== null;
+    if (!wasEditing && hasReachedNotificationRuleLimit()) {
+      setStatus(status, NOTIFICATION_RULE_LIMIT_MESSAGE, "error");
+      updateActionAvailability();
+      return;
+    }
+
     const validation = validateRuleForm();
     if (validation.errors.length) {
       showFormErrors(validation.errors);
@@ -690,7 +738,6 @@
     clearFormErrors();
     setFormBusy(true);
     setStatus(status, "通知条件を保存しています…");
-    const wasEditing = editingRuleId !== null;
     let result;
     try {
       result = await client.rpc(
@@ -702,6 +749,18 @@
     }
 
     if (!result || result.error || !result.data) {
+      if (result && isNotificationRuleLimitError(result.error)) {
+        formPanel.hidden = true;
+        formOpen = false;
+        editingRuleId = null;
+        await refreshNotificationDataAfterMutation(
+          NOTIFICATION_RULE_LIMIT_MESSAGE,
+          false,
+        );
+        setFormBusy(false);
+        return;
+      }
+
       setStatus(
         status,
         "通知条件を保存できませんでした。入力内容を確認し、再度お試しください。",

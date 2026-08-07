@@ -34,6 +34,7 @@
 - 認証用画面（ログイン・会員登録、認証callback、マイページ、利用規約、プライバシーポリシー）
 - active会員向け通知条件の一覧・新規作成・編集・一時停止・有効化・削除UI
 - 通知条件本体・施設・曜日を原子的に保存する `save_notification_rule` RPC
+- 有効・停止中を含めて1利用者最大5件とするDB triggerと、件数表示・追加制御UI
 - 正常取得日の空き枠と有効な通知条件を、実際の重複時間で判定する純粋Python照合エンジン
 - active会員の有効な条件だけを返すservice-role専用 `list_notification_rules_for_matching` RPC
 - 固定版 `supabase-js` v2と、Repository Variablesから生成するブラウザ公開設定
@@ -67,7 +68,7 @@ PKCEのcode verifierはリンクを要求したブラウザ側に保存される
 
 法務ページは暫定案であり、会員登録の一般公開前に運営者表示、問い合わせ窓口、版番号、発効日、保持・削除方針などの内容確認が必要です。詳細と未決事項は[Phase 1 Auth Design](docs/PHASE1_AUTH_DESIGN.md)を参照してください。
 
-Phase 2は進行中です。`supabase/migrations/20260807000000_create_notification_rules.sql` に鹿児島市3施設のマスター、通知条件・施設・曜日の関連、本人かつactive会員に限定したRLSを定義し、`20260807100000_add_notification_rule_save_rpc.sql` に原子的保存用 `save_notification_rule` RPCを追加しています。通知条件UIは実装済みです。`scripts/match_notification_rules.py` の空き候補照合エンジンとservice-role専用取得RPCも実装済みですが、条件数上限は未決定です。Phase 3の実メール・利用者別LINE送信、配信キュー、再試行、通知履歴は未実装です。match詳細は公開Artifact、Pages、`data/` へ保存しません。リポジトリへのmigration追加だけではSupabase環境へ自動適用されないため、適用状況は環境ごとに確認してください。詳細は[Phase 2 Notification Rules Design](docs/PHASE2_NOTIFICATION_RULES_DESIGN.md)を参照してください。
+Phase 2は完了です。`supabase/migrations/20260807000000_create_notification_rules.sql` に鹿児島市3施設のマスター、通知条件・施設・曜日の関連、本人かつactive会員に限定したRLSを定義し、`20260807100000_add_notification_rule_save_rpc.sql` に原子的保存用 `save_notification_rule` RPCを追加しています。`20260807130000_limit_notification_rules_per_user.sql` は、有効・停止中を含む通知条件を1利用者最大5件に制限します。DB triggerが最終的な強制箇所で、同一利用者の並行作成はtransaction advisory lockを取得してから件数を数えることで直列化します。UIにも「登録済み n / 5件」を表示し、5件では新規追加を無効化します。既存条件の編集・有効化・一時停止・削除は可能で、削除すれば再び追加できます。`scripts/match_notification_rules.py` の空き候補照合エンジンとservice-role専用取得RPCも実装済みです。Phase 3の実メール・利用者別LINE送信、配信キュー、再試行、通知履歴は未実装です。match詳細は公開Artifact、Pages、`data/` へ保存しません。リポジトリへのmigration追加だけではSupabase環境へ自動適用されないため、適用状況は環境ごとに確認してください。詳細は[Phase 2 Notification Rules Design](docs/PHASE2_NOTIFICATION_RULES_DESIGN.md)を参照してください。
 
 照合対象は、日別取得結果が `success` で、枠の `status` が `available` のデータだけです。施設、ISO 8601曜日、任意の日付範囲を確認し、通知条件時間帯と空き時間帯の実際の重複分数が最低連続時間以上なら一致します。同じ利用者の複数条件が同じ `slot_id` へ一致しても利用者・枠の候補は1件にまとめ、別利用者は別候補にします。現在の取得範囲は直近15日間の土日・日本の祝日、8:00〜13:00、60分以上です。平日・時間外・60分未満の条件も保存できますが、該当データを取得しないため現時点では一致しません。祝日は実際の日付の曜日で判定します。
 
@@ -108,7 +109,8 @@ Phase 2は進行中です。`supabase/migrations/20260807000000_create_notificat
 │   ├── 20260807000000_create_notification_rules.sql
 │   ├── 20260807100000_add_notification_rule_save_rpc.sql
 │   ├── 20260807110000_add_notification_rule_matching_rpc.sql
-│   └── 20260807120000_grant_notification_matching_rpc_dependencies.sql
+│   ├── 20260807120000_grant_notification_matching_rpc_dependencies.sql
+│   └── 20260807130000_limit_notification_rules_per_user.sql
 ├── tests/
 │   ├── fixtures/kamoike_schedule.html
 │   ├── fixtures/sumizei_schedule.html
@@ -283,8 +285,9 @@ $env:AUTH_CALLBACK_URL = "http://localhost:8765/auth/callback.html"
 4. `supabase/migrations/20260807100000_add_notification_rule_save_rpc.sql`
 5. `supabase/migrations/20260807110000_add_notification_rule_matching_rpc.sql`
 6. `supabase/migrations/20260807120000_grant_notification_matching_rpc_dependencies.sql`
+7. `supabase/migrations/20260807130000_limit_notification_rules_per_user.sql`
 
-適用済みmigrationを再実行・編集しないでください。対象環境のmigration履歴を確認し、未適用分だけを上記の順でそれぞれ1回適用します。適用前にSQL、RLS、Grant、初期データをレビューし、検証環境で実DBテストを行ってください。
+適用済みmigrationを再実行・編集しないでください。対象環境のmigration履歴を確認し、未適用分だけを上記の順でそれぞれ1回適用します。適用前にSQL、RLS、Grant、初期データをレビューし、検証環境で実DBテストを行ってください。第7migrationは既に6件以上の通知条件を持つ利用者がいると、利用者IDやメールアドレスを表示せずに失敗します。適用前に利用者ごとの件数を確認してください。
 
 `list_notification_rules_for_matching()` は `security invoker` のため、呼び出し元の `service_role` にも参照先テーブルの通常のSELECT権限が必要です。RLS bypassはテーブルGRANTの代わりにはなりません。第6migrationは `profiles`、`notification_rules`、`notification_rule_facilities`、`notification_rule_weekdays` の4テーブルに限ってSELECTだけを付与し、書込み権限やブラウザロールの権限は追加しません。
 
@@ -407,18 +410,17 @@ Pages画面の「最終更新」は、`availability.json` 全体が生成され�
 1. Supabaseプロジェクト、リージョン、料金枠、環境分離を決定・作成する
 2. GitHub Pagesの本番callback URLをSupabaseのRedirect URLsへ登録し、Repository Variablesを設定する
 3. メールマジックリンク、SMTP、リンク有効期限、レート制限を設定して実環境smoke testを行う
-4. 対象Supabaseのmigration履歴を確認して未適用分を手動適用し、複数の架空ユーザーでRLSとRPCを実DB検証する
-5. Phase 2の通知条件数上限を決定する
-6. Phase 3で利用者別メール送信、配信キュー、再試行、通知履歴を別実装する
-7. 退会Edge Functionと保持・削除方針を別実装する
-8. 利用規約とプライバシーポリシーの暫定初版を確認し、版番号・発効日・問い合わせ先を確定する
-9. GitHub Actionsの外部ActionをコミットSHAで固定する
-10. サイト利用規約と適切なアクセス頻度を継続確認する
+4. 対象Supabaseのmigration履歴を確認して未適用分を手動適用し、複数の架空ユーザーでRLS、RPC、5件上限、並行作成を実DB検証する
+5. Phase 3で利用者別メール送信、配信キュー、再試行、通知履歴を別実装する
+6. 退会Edge Functionと保持・削除方針を別実装する
+7. 利用規約とプライバシーポリシーの暫定初版を確認し、版番号・発効日・問い合わせ先を確定する
+8. GitHub Actionsの外部ActionをコミットSHAで固定する
+9. サイト利用規約と適切なアクセス頻度を継続確認する
 
 ## 注意事項
 
 - 自動予約は実装していません。
-- 会員DB、規約同意履歴、RLS、規約同意RPC、会員情報表示はmigrationと静的フロントエンドへ実装済みです。Phase 2の通知条件データ層、原子的保存RPC、通知条件UI、空き候補との照合エンジン、service-role専用取得RPCもリポジトリへ実装済みです。条件数上限、Phase 3の実メール送信、退会処理は未実装です。migrationの適用状況と実DB RLS検証状況は対象環境ごとに確認してください。
+- 会員DB、規約同意履歴、RLS、規約同意RPC、会員情報表示はmigrationと静的フロントエンドへ実装済みです。Phase 2の通知条件データ層、原子的保存RPC、1利用者5件の上限、通知条件UI、空き候補との照合エンジン、service-role専用取得RPCもリポジトリへ実装済みで、Phase 2は完了です。Phase 3の実メール送信と退会処理は未実装です。migrationの適用状況と実DB RLS検証状況は対象環境ごとに確認してください。
 - 短い間隔でのアクセスや過剰な並列実行は避けてください。
 - 予約サイトの仕様変更により取得できなくなる可能性があります。
 - `availability.json` とGitHub Pagesは公開情報として扱ってください。

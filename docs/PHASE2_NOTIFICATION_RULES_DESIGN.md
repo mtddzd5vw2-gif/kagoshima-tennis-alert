@@ -2,9 +2,9 @@
 
 ## 1. 目的と責務境界
 
-本書は、Phase 2で使用する地域・施設マスター、利用者ごとの通知条件を保存するデータモデル、通知条件UI、原子的保存RPC、空き候補との照合エンジンを定義する。テーブル・RLS・初期マスターは `supabase/migrations/20260807000000_create_notification_rules.sql`、原子的保存RPCは `supabase/migrations/20260807100000_add_notification_rule_save_rpc.sql`、照合処理専用の取得RPCは `supabase/migrations/20260807110000_add_notification_rule_matching_rpc.sql` に含める。
+本書は、Phase 2で使用する地域・施設マスター、利用者ごとの通知条件を保存するデータモデル、通知条件UI、原子的保存RPC、空き候補との照合エンジンを定義する。テーブル・RLS・初期マスターは `supabase/migrations/20260807000000_create_notification_rules.sql`、原子的保存RPCは `supabase/migrations/20260807100000_add_notification_rule_save_rpc.sql`、照合処理専用の取得RPCは `supabase/migrations/20260807110000_add_notification_rule_matching_rpc.sql`、1利用者5件の上限は `supabase/migrations/20260807130000_limit_notification_rules_per_user.sql` に含める。
 
-Phase 2は進行中である。通知条件の一覧・新規作成・編集・削除・一時停止・有効化UI、条件本体・施設・曜日を1トランザクションで保存する `save_notification_rule` RPC、有効な条件と空き候補を照合する純粋Pythonエンジンを実装済みである。利用者ごとの条件数上限は未決定である。
+Phase 2は完了である。通知条件の一覧・新規作成・編集・削除・一時停止・有効化UI、条件本体・施設・曜日を1トランザクションで保存する `save_notification_rule` RPC、有効な条件と空き候補を照合する純粋Pythonエンジン、1利用者5件の条件数上限を実装済みである。migrationの適用状況は環境ごとに確認する。
 
 Phase 3の責務は、利用者別メール送信、配信キュー、再試行、バウンス・配信停止処理、通知履歴である。実際の利用者別メール送信は未実装であり、Phase 2のテーブルやmigrationへ含めない。
 
@@ -203,7 +203,13 @@ DBは文字列、時間順序、日付範囲、最低連続時間、曜日、外
 
 Phase 2のUIと `save_notification_rule` RPCは、保存完了前に施設1件以上、曜日1件以上を必須検証する。UIは停止中の条件を有効化する前にも、現在読み込んでいる施設・曜日がそれぞれ1件以上あることを確認する。照合エンジンでも、施設または曜日が0件の条件を `is_enabled` の値にかかわらず無効として扱う。
 
-利用者ごとの条件数上限と無料プランの上限は未決定であり、現行UIとmigrationには実装しない。
+通知条件は1利用者あたり最大5件とする。有効な条件と停止中の条件を区別せず、`notification_rules` に保存された全件を数える。0〜4件のときは新規追加でき、5件では新規追加を拒否する。5件ある状態でも既存条件の編集・有効化・一時停止・削除は可能であり、削除して4件以下になれば再び追加できる。
+
+最終的な強制箇所は `public.notification_rules` の `before insert or update of user_id` triggerである。`public.enforce_notification_rule_limit()` は `security invoker`、`set search_path = ''` と完全修飾したSQLオブジェクト名・組込み関数を使用し、RLSを変更しない。新規作成または所有者変更時に `new.user_id` から安定した64bitキーを生成して `pg_catalog.pg_advisory_xact_lock()` を取得し、その後で移動先利用者の既存件数を数える。同一利用者の並行作成をtransaction単位で直列化するため、同時要求でも6件以上にならない。所有者が変わらないUPDATEは上限判定を行わず、所有者変更では更新対象自身を件数から除外する。
+
+上限migrationは適用前に、既に6件以上の条件を持つ利用者がいないことを検査する。該当データがある場合は利用者IDやメールアドレスを出さずにmigrationを失敗させる。trigger関数の直接実行権限は `PUBLIC`、`anon`、`authenticated` から剥奪し、trigger経由の実行だけを維持する。
+
+通知条件UIは「登録済み n / 5件」を表示し、5件で「新しい通知条件」ボタンを無効化して削除案内を表示する。新規フォームを開く時点と保存直前にも現在件数を確認するが、編集は上限判定の対象外とする。DBの並行作成競合で上限エラーになった場合は日本語の案内へ変換し、一覧を再取得して実際の件数、案内、ボタン状態を同期する。再取得に失敗した場合は追加操作を止め、ページ再読み込みを求める。DOM構築にはDOM APIと `textContent` を使用する。
 
 ## 7. RLSと権限
 
@@ -221,6 +227,8 @@ INSERTは `WITH CHECK`、UPDATEは `USING` と `WITH CHECK`、DELETEは `USING` 
 active確認は既存 `profiles` の本人SELECT RLSを利用した単純な `exists` で行う。既存RLSの無効化・緩和や、新しい `security definer` 関数は行わない。
 
 `save_notification_rule` は `security invoker`、`set search_path = ''` のまま実行し、利用者ID引数を受け取らない。新規作成では `auth.uid()` を `user_id` に使用し、編集では条件IDと `auth.uid()` の両方に一致する本人所有行だけを更新する。本体・施設・曜日の全保存が成功した場合だけ条件IDを返し、途中の例外ではRPC呼び出し全体をロールバックする。実行権限は `PUBLIC` と `anon` から剥奪し、`authenticated` だけへ付与する。
+
+新規保存は `notification_rules` へのINSERTを通るため、`save_notification_rule` RPC経由の6件目も上限triggerが拒否する。既存条件の編集は `user_id` を変更しないUPDATEであるため、5件ある状態でも保存できる。RPCの署名、`security invoker`、RLSは変更しない。
 
 `list_notification_rules_for_matching()` はGitHub Actionsなどの信頼されたサーバー処理専用である。`security invoker`、`stable`、`set search_path = ''` と完全修飾したオブジェクト名を使用し、既存RLS・policyを変更しない。active会員の有効かつ施設・曜日が各1件以上ある条件だけを返す。返却列は条件ID、利用者ID、日付範囲、開始・終了時刻、最低時間、施設ID配列、ISO曜日配列だけとし、メールアドレスは返さない。施設ID配列とISO曜日配列は重複排除してソートする。実行権限は `PUBLIC`、`anon`、`authenticated` から剥奪し、`service_role` だけへ付与するため、ブラウザのpublishable keyからは呼び出せない。
 
@@ -262,9 +270,9 @@ Actionsを有効化するにはRepository Variable `ENABLE_NOTIFICATION_MATCHING
 
 ## 12. migrationの適用とロールバック
 
-通知条件テーブルmigrationの後に、原子的保存RPC migration、照合処理専用RPC migration、service-role依存テーブルSELECT migrationの順で各1回だけ適用する。適用済みmigrationを編集・再実行せず、修正が必要な場合は新しいタイムスタンプのmigrationを追加する。
+通知条件テーブルmigrationの後に、原子的保存RPC migration、照合処理専用RPC migration、service-role依存テーブルSELECT migration、1利用者5件の上限migrationの順で各1回だけ適用する。適用済みmigrationを編集・再実行せず、修正が必要な場合は新しいタイムスタンプのmigrationを追加する。
 
-適用前に、対象Supabaseプロジェクトと環境、SQL全文、RLS、Grant、初期データをレビューする。空の検証環境では全migrationを時系列順に適用し、複数の架空ユーザーで本人・他人・inactive会員・anonの操作を実DB検証する。
+適用前に、対象Supabaseプロジェクトと環境、SQL全文、RLS、Grant、初期データ、利用者ごとの既存通知条件数をレビューする。上限migrationは6件以上を持つ利用者が存在すると匿名のエラーで停止する。空の検証環境では全migrationを時系列順に適用し、複数の架空ユーザーで本人・他人・inactive会員・anonの操作、5件時の編集、6件目の拒否、同一利用者の並行作成を実DB検証する。
 
 このmigrationには自動down migrationを用意しない。適用直後かつ利用者データがない検証環境で戻す必要がある場合だけ、子テーブル、`notification_rules`、施設、施設種別、地域の順で依存関係を確認して削除し、triggerと専用functionも削除する。本番データが存在する環境では安易にテーブルをdropせず、バックアップと復元手順を確認したうえで前方修正migrationを優先する。
 

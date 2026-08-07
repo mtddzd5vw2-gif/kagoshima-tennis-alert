@@ -71,14 +71,26 @@
         <div class="notification-toolbar">
           <div>
             <h2 id="notification-rule-list-title">登録済みの通知条件</h2>
+            <p class="muted" data-notification-rule-count aria-live="polite">
+              登録済み 0 / 5件
+            </p>
             <p class="muted">
               有効化した条件が空き状況照合の対象になります。
             </p>
           </div>
           <button class="button" type="button" data-new-rule>
-            新しい条件を作成
+            新しい通知条件
           </button>
         </div>
+
+        <p
+          class="notice"
+          data-notification-rule-limit
+          aria-live="polite"
+          hidden
+        >
+          通知条件は最大5件まで登録できます。追加するには既存の条件を削除してください。
+        </p>
 
         <p
           class="status-text notification-status"
@@ -290,7 +302,7 @@
         >
           <h2 id="notification-empty-title">通知条件はまだありません</h2>
           <p>
-            「新しい条件を作成」から、希望する施設や曜日を登録してください。
+            「新しい通知条件」から、希望する施設や曜日を登録してください。
           </p>
         </section>
       </div>

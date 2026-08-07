@@ -322,7 +322,10 @@ def test_phase_two_design_documents_boundaries_and_incomplete_rules() -> None:
         "曜日1件以上",
         "save_notification_rule",
         "security invoker",
-        "進行中",
+        "完了",
+        "最大5件",
+        "停止中",
+        "advisory",
         "照合エンジン",
         "自動適用されない",
     ):
