@@ -131,6 +131,19 @@ def test_limit_migration_follows_the_applied_save_rpc_migration() -> None:
     )
 
 
+def test_migration_runs_inside_an_explicit_transaction() -> None:
+    sql = compact(read_migration())
+    begin_position = sql.index("begin;")
+    lock_position = sql.index(
+        "lock table public.notification_rules in share row exclusive mode"
+    )
+    commit_position = sql.rindex("commit;")
+
+    assert sql.startswith("begin;")
+    assert begin_position < lock_position < commit_position
+    assert sql.endswith("commit;")
+
+
 def test_migration_precheck_rejects_existing_users_above_five_anonymously() -> None:
     sql = compact(read_migration())
     lock_position = sql.index(
