@@ -1,6 +1,8 @@
 -- Limit each user to five notification rules, including paused rules.
 -- Delivery remains a Phase 3 responsibility.
 
+begin;
+
 lock table public.notification_rules in share row exclusive mode;
 
 do language plpgsql $migration_check$
@@ -77,3 +79,5 @@ comment on function public.enforce_notification_rule_limit() is
 comment on trigger enforce_notification_rules_per_user_limit
 on public.notification_rules is
   'Rejects inserts and owner changes that would exceed five notification rules for one user.';
+
+commit;
