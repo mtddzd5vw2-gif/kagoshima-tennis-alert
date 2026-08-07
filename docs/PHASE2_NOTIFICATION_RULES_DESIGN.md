@@ -224,6 +224,8 @@ active確認は既存 `profiles` の本人SELECT RLSを利用した単純な `ex
 
 `list_notification_rules_for_matching()` はGitHub Actionsなどの信頼されたサーバー処理専用である。`security invoker`、`stable`、`set search_path = ''` と完全修飾したオブジェクト名を使用し、既存RLS・policyを変更しない。active会員の有効かつ施設・曜日が各1件以上ある条件だけを返す。返却列は条件ID、利用者ID、日付範囲、開始・終了時刻、最低時間、施設ID配列、ISO曜日配列だけとし、メールアドレスは返さない。施設ID配列とISO曜日配列は重複排除してソートする。実行権限は `PUBLIC`、`anon`、`authenticated` から剥奪し、`service_role` だけへ付与するため、ブラウザのpublishable keyからは呼び出せない。
 
+このRPCは `security invoker` であるため、`service_role` のRLS bypassとは別に、内部で参照するテーブルの通常のSELECT権限を必要とする。`20260807120000_grant_notification_matching_rpc_dependencies.sql` は `public.profiles`、`public.notification_rules`、`public.notification_rule_facilities`、`public.notification_rule_weekdays` の4テーブルだけにSELECTを付与する。INSERT、UPDATE、DELETE等の書込み権限、他テーブル、`PUBLIC`、`anon`、`authenticated` への権限は追加しない。RPCは引き続き `security invoker` と既存RLSを維持する。
+
 ## 8. 空き候補との照合
 
 `scripts/match_notification_rules.py` は外部通信と分離した純粋関数を中心に構成する。通知条件は `rule_id`、`user_id`、`is_enabled`、任意の `date_from` / `date_to`、`start_time` / `end_time`、`minimum_duration_minutes`、`facility_ids`、ISO 8601の `weekdays` を正規化して評価する。
@@ -260,7 +262,7 @@ Actionsを有効化するにはRepository Variable `ENABLE_NOTIFICATION_MATCHING
 
 ## 12. migrationの適用とロールバック
 
-通知条件テーブルmigrationの後に、原子的保存RPC migration、照合処理専用RPC migrationの順で各1回だけ適用する。適用済みmigrationを編集・再実行せず、修正が必要な場合は新しいタイムスタンプのmigrationを追加する。
+通知条件テーブルmigrationの後に、原子的保存RPC migration、照合処理専用RPC migration、service-role依存テーブルSELECT migrationの順で各1回だけ適用する。適用済みmigrationを編集・再実行せず、修正が必要な場合は新しいタイムスタンプのmigrationを追加する。
 
 適用前に、対象Supabaseプロジェクトと環境、SQL全文、RLS、Grant、初期データをレビューする。空の検証環境では全migrationを時系列順に適用し、複数の架空ユーザーで本人・他人・inactive会員・anonの操作を実DB検証する。
 

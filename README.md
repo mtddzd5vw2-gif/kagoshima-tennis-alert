@@ -107,7 +107,8 @@ Phase 2は進行中です。`supabase/migrations/20260807000000_create_notificat
 ├── supabase/migrations/
 │   ├── 20260807000000_create_notification_rules.sql
 │   ├── 20260807100000_add_notification_rule_save_rpc.sql
-│   └── 20260807110000_add_notification_rule_matching_rpc.sql
+│   ├── 20260807110000_add_notification_rule_matching_rpc.sql
+│   └── 20260807120000_grant_notification_matching_rpc_dependencies.sql
 ├── tests/
 │   ├── fixtures/kamoike_schedule.html
 │   ├── fixtures/sumizei_schedule.html
@@ -118,6 +119,7 @@ Phase 2は進行中です。`supabase/migrations/20260807000000_create_notificat
 │   ├── test_notification_rules_ui.py
 │   ├── test_notification_rule_matching.py
 │   ├── test_notification_rule_matching_rpc.py
+│   ├── test_notification_matching_service_role_grants.py
 │   ├── test_page.py
 │   └── test_scrape.py
 ├── index.html
@@ -280,8 +282,11 @@ $env:AUTH_CALLBACK_URL = "http://localhost:8765/auth/callback.html"
 3. `supabase/migrations/20260807000000_create_notification_rules.sql`
 4. `supabase/migrations/20260807100000_add_notification_rule_save_rpc.sql`
 5. `supabase/migrations/20260807110000_add_notification_rule_matching_rpc.sql`
+6. `supabase/migrations/20260807120000_grant_notification_matching_rpc_dependencies.sql`
 
 適用済みmigrationを再実行・編集しないでください。対象環境のmigration履歴を確認し、未適用分だけを上記の順でそれぞれ1回適用します。適用前にSQL、RLS、Grant、初期データをレビューし、検証環境で実DBテストを行ってください。
+
+`list_notification_rules_for_matching()` は `security invoker` のため、呼び出し元の `service_role` にも参照先テーブルの通常のSELECT権限が必要です。RLS bypassはテーブルGRANTの代わりにはなりません。第6migrationは `profiles`、`notification_rules`、`notification_rule_facilities`、`notification_rule_weekdays` の4テーブルに限ってSELECTだけを付与し、書込み権限やブラウザロールの権限は追加しません。
 
 第2migrationの実行後はTable Editorで変更せず、SQL Editorで次を確認してください。
 
