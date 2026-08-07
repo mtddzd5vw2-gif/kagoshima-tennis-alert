@@ -132,6 +132,30 @@ def test_account_and_notification_pages_link_to_each_other_and_availability() ->
     assert notifications.find("a", href="../index.html")
 
 
+def test_notification_page_explains_the_current_acquisition_scope() -> None:
+    notifications = BeautifulSoup(read(PAGE_PATH), "html.parser")
+    guidance = notifications.find(
+        class_="notice",
+        attrs={"aria-label": "現在の空き取得範囲"},
+    )
+    assert guidance
+    text = guidance.get_text(" ", strip=True)
+
+    for expected in (
+        "土日・日本の祝日",
+        "8:00〜13:00",
+        "60分以上",
+        "平日",
+        "時間外",
+        "60分未満",
+        "保存できます",
+        "一致しません",
+        "実際の日付の曜日",
+    ):
+        assert expected in text
+    assert not notifications.find("input", attrs={"name": "holiday"})
+
+
 def test_notification_script_uses_existing_auth_contract_and_session_identity() -> None:
     script = read(SCRIPT_PATH)
 
@@ -327,7 +351,7 @@ def test_phase_two_documents_describe_current_progress_and_remaining_scope() -> 
     assert "通知条件の一覧・新規作成・編集・一時停止・有効化・削除UI" in (
         service_spec
     )
-    assert "照合ロジックは未実装" in service_spec
+    assert "照合エンジン" in service_spec
 
     assert "Phase 2は進行中" in readme
     assert "通知条件UIは実装済み" in readme

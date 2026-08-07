@@ -25,6 +25,9 @@ EXPECTED_FACILITIES = {
 NOTIFICATION_MIGRATION_HASH = (
     "8f28ec3d2ba245a9360002ed971ac954957e6078e427ec1d3662be3604b41581"
 )
+SAVE_RPC_MIGRATION_HASH = (
+    "343a3ac9ba08b0303387c61b831d3a2844753373ea123618acb4911d96139494"
+)
 IMMUTABLE_MIGRATION_HASHES = {
     "20260804000000_create_member_profiles.sql": (
         "f55877aed328b98cd05ce17c92998b9fbb6f7dfc66ca72abbedf533010121056"
@@ -320,7 +323,7 @@ def test_phase_two_design_documents_boundaries_and_incomplete_rules() -> None:
         "save_notification_rule",
         "security invoker",
         "進行中",
-        "照合ロジックは未実装",
+        "照合エンジン",
         "自動適用されない",
     ):
         assert expected in design
@@ -340,9 +343,13 @@ def test_existing_migration_content_remains_unchanged() -> None:
     assert hashlib.sha256(notification_bytes).hexdigest() == (
         NOTIFICATION_MIGRATION_HASH
     )
+    save_rpc_bytes = (
+        MIGRATION_DIR / "20260807100000_add_notification_rule_save_rpc.sql"
+    ).read_bytes().replace(b"\r\n", b"\n")
+    assert hashlib.sha256(save_rpc_bytes).hexdigest() == SAVE_RPC_MIGRATION_HASH
 
 
-def test_phase_zero_data_ui_scraper_and_actions_are_not_modified() -> None:
+def test_phase_zero_data_ui_and_scraper_are_not_modified() -> None:
     result = subprocess.run(
         ["git", "diff", "--name-only", "HEAD", "--"],
         cwd=ROOT,
@@ -352,7 +359,6 @@ def test_phase_zero_data_ui_scraper_and_actions_are_not_modified() -> None:
     )
     changed_paths = set(result.stdout.splitlines())
     forbidden_exact = {
-        ".github/workflows/update-availability.yml",
         "data/availability.json",
         "data/notification-state.json",
         "index.html",

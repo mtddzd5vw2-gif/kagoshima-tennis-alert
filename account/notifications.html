@@ -61,11 +61,18 @@
       </section>
 
       <div data-notification-content hidden>
+        <div class="notice" aria-label="現在の空き取得範囲">
+          現在取得している空きは、土日・日本の祝日の8:00〜13:00で、
+          60分以上の枠です。平日・時間外・60分未満の条件も保存できますが、
+          現時点では該当する空きデータを取得しないため一致しません。
+          祝日は、実際の日付の曜日で条件を判定します。
+        </div>
+
         <div class="notification-toolbar">
           <div>
             <h2 id="notification-rule-list-title">登録済みの通知条件</h2>
             <p class="muted">
-              有効化した条件が将来の空き状況照合の対象になります。
+              有効化した条件が空き状況照合の対象になります。
             </p>
           </div>
           <button class="button" type="button" data-new-rule>

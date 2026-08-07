@@ -34,6 +34,8 @@
 - 認証用画面（ログイン・会員登録、認証callback、マイページ、利用規約、プライバシーポリシー）
 - active会員向け通知条件の一覧・新規作成・編集・一時停止・有効化・削除UI
 - 通知条件本体・施設・曜日を原子的に保存する `save_notification_rule` RPC
+- 正常取得日の空き枠と有効な通知条件を、実際の重複時間で判定する純粋Python照合エンジン
+- active会員の有効な条件だけを返すservice-role専用 `list_notification_rules_for_matching` RPC
 - 固定版 `supabase-js` v2と、Repository Variablesから生成するブラウザ公開設定
 
 空き状況は候補です。予約前に必ず公式サイトで最新情報を確認してください。
@@ -50,7 +52,7 @@
 
 PKCEのcode verifierはリンクを要求したブラウザ側に保存されるため、マジックリンクは原則としてログイン操作を開始した同じブラウザで開く必要があります。別端末・別ブラウザで開いて認証に失敗した場合は、利用するブラウザでログイン画面から再送してください。
 
-`supabase/migrations/20260804000000_create_member_profiles.sql` に `legal_document_versions`、`profiles`、`terms_acceptances`、新規Authユーザー用trigger、既存ユーザーbackfill、RLS、最小権限Grant、引数なしの `accept_current_terms()` RPCを実装しています。`20260806000000_fix_accept_current_terms_conflict.sql` は、適用済みの関数を制約名指定の `ON CONFLICT` へ置き換えます。ブラウザから会員データを直接変更する権限はなく、同意登録だけをRPCへ集約します。退会Edge Function、空き候補との照合、利用者別通知、LINE連携、課金は未実装で、退会ボタンは準備中のままです。
+`supabase/migrations/20260804000000_create_member_profiles.sql` に `legal_document_versions`、`profiles`、`terms_acceptances`、新規Authユーザー用trigger、既存ユーザーbackfill、RLS、最小権限Grant、引数なしの `accept_current_terms()` RPCを実装しています。`20260806000000_fix_accept_current_terms_conflict.sql` は、適用済みの関数を制約名指定の `ON CONFLICT` へ置き換えます。ブラウザから会員データを直接変更する権限はなく、同意登録だけをRPCへ集約します。退会Edge Function、利用者別の実通知、LINE連携、課金は未実装で、退会ボタンは準備中のままです。
 
 開発用の現行規約版は `2026-08-04-draft` です。一般公開前に正式な規約本文・版番号・発効日へ更新し、開発用版への同意済み利用者にも正式版への再同意を求めてください。
 
@@ -65,7 +67,9 @@ PKCEのcode verifierはリンクを要求したブラウザ側に保存される
 
 法務ページは暫定案であり、会員登録の一般公開前に運営者表示、問い合わせ窓口、版番号、発効日、保持・削除方針などの内容確認が必要です。詳細と未決事項は[Phase 1 Auth Design](docs/PHASE1_AUTH_DESIGN.md)を参照してください。
 
-Phase 2は進行中です。`supabase/migrations/20260807000000_create_notification_rules.sql` に鹿児島市3施設のマスター、通知条件・施設・曜日の関連、本人かつactive会員に限定したRLSを定義し、`20260807100000_add_notification_rule_save_rpc.sql` に原子的保存用 `save_notification_rule` RPCを追加しています。通知条件UIは実装済みですが、空き候補との照合ロジックは未実装で、条件数上限は未決定です。Phase 3の実メール送信も未実装です。リポジトリへのmigration追加だけではSupabase環境へ自動適用されないため、適用状況は環境ごとに確認してください。詳細は[Phase 2 Notification Rules Design](docs/PHASE2_NOTIFICATION_RULES_DESIGN.md)を参照してください。
+Phase 2は進行中です。`supabase/migrations/20260807000000_create_notification_rules.sql` に鹿児島市3施設のマスター、通知条件・施設・曜日の関連、本人かつactive会員に限定したRLSを定義し、`20260807100000_add_notification_rule_save_rpc.sql` に原子的保存用 `save_notification_rule` RPCを追加しています。通知条件UIは実装済みです。`scripts/match_notification_rules.py` の空き候補照合エンジンとservice-role専用取得RPCも実装済みですが、条件数上限は未決定です。Phase 3の実メール・利用者別LINE送信、配信キュー、再試行、通知履歴は未実装です。match詳細は公開Artifact、Pages、`data/` へ保存しません。リポジトリへのmigration追加だけではSupabase環境へ自動適用されないため、適用状況は環境ごとに確認してください。詳細は[Phase 2 Notification Rules Design](docs/PHASE2_NOTIFICATION_RULES_DESIGN.md)を参照してください。
+
+照合対象は、日別取得結果が `success` で、枠の `status` が `available` のデータだけです。施設、ISO 8601曜日、任意の日付範囲を確認し、通知条件時間帯と空き時間帯の実際の重複分数が最低連続時間以上なら一致します。同じ利用者の複数条件が同じ `slot_id` へ一致しても利用者・枠の候補は1件にまとめ、別利用者は別候補にします。現在の取得範囲は直近15日間の土日・日本の祝日、8:00〜13:00、60分以上です。平日・時間外・60分未満の条件も保存できますが、該当データを取得しないため現時点では一致しません。祝日は実際の日付の曜日で判定します。
 
 ## ファイル構成
 
@@ -98,10 +102,12 @@ Phase 2は進行中です。`supabase/migrations/20260807000000_create_notificat
 ├── scripts/
 │   ├── __init__.py
 │   ├── generate_auth_config.py
+│   ├── match_notification_rules.py
 │   └── scrape.py
 ├── supabase/migrations/
 │   ├── 20260807000000_create_notification_rules.sql
-│   └── 20260807100000_add_notification_rule_save_rpc.sql
+│   ├── 20260807100000_add_notification_rule_save_rpc.sql
+│   └── 20260807110000_add_notification_rule_matching_rpc.sql
 ├── tests/
 │   ├── fixtures/kamoike_schedule.html
 │   ├── fixtures/sumizei_schedule.html
@@ -110,6 +116,8 @@ Phase 2は進行中です。`supabase/migrations/20260807000000_create_notificat
 │   ├── test_notifications.py
 │   ├── test_notification_rules_schema.py
 │   ├── test_notification_rules_ui.py
+│   ├── test_notification_rule_matching.py
+│   ├── test_notification_rule_matching_rpc.py
 │   ├── test_page.py
 │   └── test_scrape.py
 ├── index.html
@@ -271,6 +279,7 @@ $env:AUTH_CALLBACK_URL = "http://localhost:8765/auth/callback.html"
 2. `supabase/migrations/20260806000000_fix_accept_current_terms_conflict.sql`
 3. `supabase/migrations/20260807000000_create_notification_rules.sql`
 4. `supabase/migrations/20260807100000_add_notification_rule_save_rpc.sql`
+5. `supabase/migrations/20260807110000_add_notification_rule_matching_rpc.sql`
 
 適用済みmigrationを再実行・編集しないでください。対象環境のmigration履歴を確認し、未適用分だけを上記の順でそれぞれ1回適用します。適用前にSQL、RLS、Grant、初期データをレビューし、検証環境で実DBテストを行ってください。
 
@@ -282,7 +291,19 @@ $env:AUTH_CALLBACK_URL = "http://localhost:8765/auth/callback.html"
 4. 新しい開発用ユーザーでマジックリンクを開き、同意後にprofileが `active` となり、同意履歴が1件追加される。
 5. 同じ規約への再同意で履歴が重複しない。
 
-SQL Editorへ貼り付ける前に、プロジェクト名と環境を再確認してください。service role key、secret key、DBパスワードはこの手順では使用しません。
+SQL Editorへ貼り付ける前に、プロジェクト名と環境を再確認してください。service role key、secret key、DBパスワードはmigration適用手順では使用しません。
+
+### 通知条件の照合
+
+照合CLIは、公開しないservice-role keyで通知条件取得RPCを呼び、結果の詳細をファイルへ保存せず集計値だけを表示します。
+
+```powershell
+$env:SUPABASE_URL = "https://<project-ref>.supabase.co"
+$env:SUPABASE_SERVICE_ROLE_KEY = "<service-role-key>"
+python scripts/match_notification_rules.py --availability run-output/availability.json
+```
+
+出力は `rules_evaluated`、`slots_evaluated`、`matched_users`、`matched_slots`、`match_candidates` だけです。利用者ID、条件ID、メールアドレス、keyは出力しません。service-role keyはローカルの環境変数またはGitHub Actions Secretだけで管理し、ファイル、ブラウザ公開設定、ログ、Artifactへ保存しないでください。
 
 ### データ更新
 
@@ -346,11 +367,16 @@ LINE通知対象は鴨池県営テニスコートとSuMIzeiテニスコートで
 | --- | --- |
 | `ENABLE_SCHEDULED_RUNS` | `true` のときだけcron実行を許可 |
 | `ENABLE_LINE_NOTIFICATIONS` | `true` のときだけ定期実行の差分通知を許可 |
+| `ENABLE_NOTIFICATION_MATCHING` | `true` のときだけPhase 2の通知条件照合を実行 |
 | `SUPABASE_URL` | ブラウザ公開用のSupabase Project URL |
 | `SUPABASE_PUBLISHABLE_KEY` | ブラウザ公開用のpublishable key |
 | `AUTH_CALLBACK_URL` | Supabaseに許可登録した本番callback URL |
 
-有効化フラグが未設定または `true` 以外の場合は安全側に倒します。定期実行自体を開始するには `ENABLE_SCHEDULED_RUNS=true`、定期LINE通知も行うには加えて `ENABLE_LINE_NOTIFICATIONS=true` が必要です。手動実行は `ENABLE_SCHEDULED_RUNS` に関係なく利用できます。Pagesデプロイ時は認証用3変数がすべて必須で、空値なら設定生成を失敗させてデプロイしません。これらは公開値でありRepository SecretsではなくVariablesへ設定します。secret key、service role key、DBパスワードは登録・使用しません。
+有効化フラグが未設定または `true` 以外の場合は安全側に倒します。定期実行自体を開始するには `ENABLE_SCHEDULED_RUNS=true`、定期LINE通知も行うには加えて `ENABLE_LINE_NOTIFICATIONS=true` が必要です。手動実行は `ENABLE_SCHEDULED_RUNS` に関係なく利用できます。Pagesデプロイ時は認証用3変数がすべて必須で、空値なら設定生成を失敗させてデプロイしません。`SUPABASE_URL`、`SUPABASE_PUBLISHABLE_KEY`、`AUTH_CALLBACK_URL` は公開値でありRepository Variablesへ設定します。
+
+通知条件照合を実行する場合だけ、`Settings` → `Secrets and variables` → `Actions` → `Secrets` に `SUPABASE_SERVICE_ROLE_KEY` を登録し、Variable `ENABLE_NOTIFICATION_MATCHING=true` を設定します。service-role keyは照合stepの環境変数だけへ渡され、ジョブ全体、Pagesジョブ、Artifactには渡されません。照合用migrationの適用状況も対象Supabase環境で確認してください。
+
+Phase 2照合は集計だけを行うシャドーモードで、照合stepには `continue-on-error: true` を設定しています。Supabase障害やSecret設定不備はwarningとして確認できますが、既存JSONのcommit、単一宛先LINEの状態更新、Pagesデプロイはブロックしません。
 
 ## GitHub ActionsとPages
 
@@ -361,10 +387,11 @@ Pages画面の「最終更新」は、`availability.json` 全体が生成され�
 1. 固定済み依存関係とChromiumをセットアップ
 2. pytestを実行
 3. `scripts/scrape.py` で全施設と通知状態を更新
-4. スナップショット、実行時JSON、`index.html`、Phase 1静的画面と共通assetsを `reservation-page-snapshots` Artifactとして常時保存
-5. dry-runでなければ意味のある2つのJSON変更だけをコミット
-6. 別ジョブがRepository Variablesから `_site/assets/config/auth-config.js` を生成
-7. Pages専用権限で `index.html`、最新JSON、認証画面、法務画面、共通assetsをデプロイ
+4. `ENABLE_NOTIFICATION_MATCHING=true` の場合だけ、実行時JSONとservice-role専用RPCで通知条件を照合
+5. スナップショット、実行時JSON、`index.html`、Phase 1静的画面と共通assetsを `reservation-page-snapshots` Artifactとして常時保存。match詳細は含めない
+6. dry-runでなければ意味のある2つのJSON変更だけをコミット
+7. 別ジョブがRepository Variablesから `_site/assets/config/auth-config.js` を生成
+8. Pages専用権限で `index.html`、最新JSON、認証画面、法務画面、共通assetsをデプロイ
 
 取得ジョブだけが `contents: write`、Pagesジョブだけが `pages: write` と `id-token: write` を持ちます。dry-runではcommitとPagesジョブを実行しません。一部施設の取得失敗は日別のエラーとしてJSONへ記録し、他施設の処理を継続します。初回実行前に、GitHubリポジトリの `Settings` → `Pages` でSourceを `GitHub Actions` に設定してください。
 
@@ -376,15 +403,17 @@ Pages画面の「最終更新」は、`availability.json` 全体が生成され�
 2. GitHub Pagesの本番callback URLをSupabaseのRedirect URLsへ登録し、Repository Variablesを設定する
 3. メールマジックリンク、SMTP、リンク有効期限、レート制限を設定して実環境smoke testを行う
 4. 対象Supabaseのmigration履歴を確認して未適用分を手動適用し、複数の架空ユーザーでRLSとRPCを実DB検証する
-5. 退会Edge Functionと保持・削除方針を別実装する
-6. 利用規約とプライバシーポリシーの暫定初版を確認し、版番号・発効日・問い合わせ先を確定する
-7. GitHub Actionsの外部ActionをコミットSHAで固定する
-8. サイト利用規約と適切なアクセス頻度を継続確認する
+5. Phase 2の通知条件数上限を決定する
+6. Phase 3で利用者別メール送信、配信キュー、再試行、通知履歴を別実装する
+7. 退会Edge Functionと保持・削除方針を別実装する
+8. 利用規約とプライバシーポリシーの暫定初版を確認し、版番号・発効日・問い合わせ先を確定する
+9. GitHub Actionsの外部ActionをコミットSHAで固定する
+10. サイト利用規約と適切なアクセス頻度を継続確認する
 
 ## 注意事項
 
 - 自動予約は実装していません。
-- 会員DB、規約同意履歴、RLS、規約同意RPC、会員情報表示はmigrationと静的フロントエンドへ実装済みです。Phase 2の通知条件データ層、原子的保存RPC、通知条件UIもリポジトリへ実装済みです。空き候補との照合ロジック、条件数上限、Phase 3の実メール送信、退会処理は未実装です。migrationの適用状況と実DB RLS検証状況は対象環境ごとに確認してください。
+- 会員DB、規約同意履歴、RLS、規約同意RPC、会員情報表示はmigrationと静的フロントエンドへ実装済みです。Phase 2の通知条件データ層、原子的保存RPC、通知条件UI、空き候補との照合エンジン、service-role専用取得RPCもリポジトリへ実装済みです。条件数上限、Phase 3の実メール送信、退会処理は未実装です。migrationの適用状況と実DB RLS検証状況は対象環境ごとに確認してください。
 - 短い間隔でのアクセスや過剰な並列実行は避けてください。
 - 予約サイトの仕様変更により取得できなくなる可能性があります。
 - `availability.json` とGitHub Pagesは公開情報として扱ってください。
